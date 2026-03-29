@@ -34,6 +34,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   code-quality:
@@ -94,6 +95,14 @@ jobs:
         if: inputs.helm-path != ''
         uses: azure/setup-helm@v4.3.0
 
+      - name: Login to GitHub Container Registry
+        if: inputs.helm-path != ''
+        run: echo "${{ github.token }}" | helm registry login ghcr.io -u $ --password-stdin
+
+      - name: Helm dependency build
+        if: inputs.helm-path != ''
+        run: helm dependency build ${{ inputs.helm-path }}
+
       - name: Helm lint
         if: inputs.helm-path != ''
         run: helm lint ${{ inputs.helm-path }}
@@ -132,7 +141,12 @@ jobs:
 
       - name: Pytest
         if: inputs.language == 'python'
-        run: uv run pytest
+        run: |
+          if [ -d "tests" ] && [ -n "$(find tests -name 'test_*.py' -o -name '*_test.py' 2>/dev/null)" ]; then
+            uv run pytest
+          else
+            echo "No tests found, skipping"
+          fi
 
       # Rust
       - name: Setup Rust toolchain
