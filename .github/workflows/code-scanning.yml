@@ -1,0 +1,115 @@
+name: Code Scanning
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: "Primary language: python, rust, go, javascript, or typescript"
+        type: string
+        required: true
+      codeql-languages:
+        description: 'CodeQL languages as JSON array (e.g. ["python"]). Empty to skip CodeQL.'
+        type: string
+        default: ""
+      semgrep-rules:
+        description: "Semgrep ruleset to use (e.g. p/default, p/owasp-top-ten, p/python)"
+        type: string
+        default: "p/default"
+      skip-semgrep:
+        description: "Skip Semgrep analysis"
+        type: boolean
+        default: false
+      skip-codeql:
+        description: "Skip CodeQL analysis"
+        type: boolean
+        default: false
+      skip-checkov:
+        description: "Skip Checkov IaC scan"
+        type: boolean
+        default: false
+      checkov-soft-fail:
+        description: "Do not fail the build on Checkov findings (soft fail)"
+        type: boolean
+        default: false
+      checkov-skip-check:
+        description: "Comma-separated Checkov check IDs to skip"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  codeql:
+    name: CodeQL Analysis
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip-codeql && inputs.codeql-languages != '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJson(inputs.codeql-languages) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  semgrep:
+    name: Semgrep SAST
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip-semgrep }}
+    container:
+      image: semgrep/semgrep
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        run: semgrep scan --config ${{ inputs.semgrep-rules }} --sarif --output semgrep-results.sarif .
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+      - name: Upload Semgrep results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep-results.sarif
+          category: semgrep
+
+  checkov:
+    name: Checkov IaC Scan
+    runs-on: ubuntu-latest
+    if: ${{ !inputs.skip-checkov }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          soft_fail: ${{ inputs.checkov-soft-fail }}
+          skip_check: ${{ inputs.checkov-skip-check }}
+          output_format: cli,sarif
+          output_file_path: console,checkov-results.sarif
+
+      - name: Upload Checkov results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov-results.sarif
+          category: checkov

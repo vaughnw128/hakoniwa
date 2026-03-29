@@ -1,0 +1,51 @@
+{{- if and .Values.autoscaling .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "single-container.name" . }}
+  labels:
+    {{- include "single-container.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "single-container.name" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas | default 1 }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas | default 3 }}
+  metrics:
+    {{- if .Values.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+  {{- if or .Values.autoscaling.scaleDown .Values.autoscaling.scaleUp }}
+  behavior:
+    {{- if .Values.autoscaling.scaleDown }}
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.autoscaling.scaleDown.stabilizationWindowSeconds | default 300 }}
+      policies:
+        - type: Pods
+          value: {{ .Values.autoscaling.scaleDown.maxPods | default 1 }}
+          periodSeconds: {{ .Values.autoscaling.scaleDown.periodSeconds | default 60 }}
+    {{- end }}
+    {{- if .Values.autoscaling.scaleUp }}
+    scaleUp:
+      stabilizationWindowSeconds: {{ .Values.autoscaling.scaleUp.stabilizationWindowSeconds | default 60 }}
+      policies:
+        - type: Pods
+          value: {{ .Values.autoscaling.scaleUp.maxPods | default 1 }}
+          periodSeconds: {{ .Values.autoscaling.scaleUp.periodSeconds | default 60 }}
+    {{- end }}
+  {{- end }}
+{{- end }}

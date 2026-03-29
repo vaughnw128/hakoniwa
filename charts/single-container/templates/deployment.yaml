@@ -1,0 +1,179 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "single-container.name" . }}
+  labels:
+    {{- include "single-container.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas | default 1 }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "single-container.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "single-container.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if or (and .Values.serviceAccount .Values.serviceAccount.create) (and .Values.serviceAccount .Values.serviceAccount.name) }}
+      serviceAccountName: {{ include "single-container.serviceAccountName" . }}
+      {{- end }}
+      securityContext:
+        {{- include "single-container.podSecurityContext" . | nindent 8 }}
+      automountServiceAccountToken: {{ if and .Values.serviceAccount .Values.serviceAccount.create }}{{ .Values.serviceAccount.automount | default true }}{{ else }}false{{ end }}
+
+      containers:
+        - name: {{ include "single-container.name" . }}
+          image: "{{ .Values.image }}:{{ .Values.imageTag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.imagePullPolicy | default "IfNotPresent" }}
+          securityContext:
+            {{- include "single-container.containerSecurityContext" . | nindent 12 }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - containerPort: {{ include "single-container.containerPort" . }}
+
+          {{- if and .Values.livenessProbe (ne (default true .Values.livenessProbe.enabled) false) }}
+          livenessProbe:
+            {{- if .Values.livenessProbe.httpGet }}
+            httpGet:
+              path: {{ .Values.livenessProbe.httpGet.path }}
+              port: {{ .Values.livenessProbe.httpGet.port | default (include "single-container.containerPort" .) }}
+            {{- else if .Values.livenessProbe.exec }}
+            exec:
+              command:
+                {{- toYaml .Values.livenessProbe.exec.command | nindent 16 }}
+            {{- end }}
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds | default 10 }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds | default 15 }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds | default 5 }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold | default 3 }}
+          {{- end }}
+          {{- if and .Values.readinessProbe (ne (default true .Values.readinessProbe.enabled) false) }}
+          readinessProbe:
+            {{- if .Values.readinessProbe.httpGet }}
+            httpGet:
+              path: {{ .Values.readinessProbe.httpGet.path }}
+              port: {{ .Values.readinessProbe.httpGet.port | default (include "single-container.containerPort" .) }}
+            {{- else if .Values.readinessProbe.exec }}
+            exec:
+              command:
+                {{- toYaml .Values.readinessProbe.exec.command | nindent 16 }}
+            {{- end }}
+            initialDelaySeconds: {{ .Values.readinessProbe.initialDelaySeconds | default 5 }}
+            periodSeconds: {{ .Values.readinessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.readinessProbe.timeoutSeconds | default 5 }}
+            failureThreshold: {{ .Values.readinessProbe.failureThreshold | default 3 }}
+          {{- end }}
+          {{- if and .Values.startupProbe .Values.startupProbe.enabled }}
+          startupProbe:
+            {{- if .Values.startupProbe.httpGet }}
+            httpGet:
+              path: {{ .Values.startupProbe.httpGet.path }}
+              port: {{ .Values.startupProbe.httpGet.port | default (include "single-container.containerPort" .) }}
+            {{- else if .Values.startupProbe.exec }}
+            exec:
+              command:
+                {{- toYaml .Values.startupProbe.exec.command | nindent 16 }}
+            {{- end }}
+            initialDelaySeconds: {{ .Values.startupProbe.initialDelaySeconds | default 0 }}
+            periodSeconds: {{ .Values.startupProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.startupProbe.timeoutSeconds | default 5 }}
+            failureThreshold: {{ .Values.startupProbe.failureThreshold | default 30 }}
+          {{- end }}
+
+          {{- if or .Values.secretVars .Values.envVars (and .Values.db .Values.db.enabled) (and .Values.serviceToken .Values.serviceToken.enabled) }}
+          env:
+            {{- if and .Values.db .Values.db.enabled }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "db.secretName is required when db.enabled is true" .Values.db.secretName }}
+                  key: {{ .Values.db.uriKey | default "uri" }}
+            {{- end }}
+            {{- if and .Values.serviceToken .Values.serviceToken.enabled }}
+            - name: SERVICE_TOKEN_FILE
+              value: {{ .Values.serviceToken.mountPath | default "/app/secrets/service_token" | quote }}
+            {{- end }}
+            {{- range $secret, $value := .Values.secretVars }}
+            - name: {{ $secret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "single-container.name" $ }}-secrets
+                  key: {{ $secret }}
+            {{- end }}
+            {{- range $var, $value := .Values.envVars }}
+            - name: {{ $var }}
+              value: {{ quote $value }}
+            {{- end }}
+          {{- end }}
+
+          {{- $readOnly := eq (include "single-container.readOnlyRootFilesystem" .) "true" }}
+          {{- if or .Values.volumeMounts .Values.persistence .Values.serviceToken $readOnly }}
+          volumeMounts:
+            {{- /* /tmp scratch for readOnlyRootFilesystem (default: true) */}}
+            {{- if $readOnly }}
+            - name: tmp-scratch
+              mountPath: /tmp
+            {{- end }}
+            {{- /* Service token mount */}}
+            {{- if and .Values.serviceToken .Values.serviceToken.enabled }}
+            - name: service-token
+              mountPath: {{ .Values.serviceToken.mountPath | default "/app/secrets/service_token" }}
+              subPath: service_token
+              readOnly: true
+            {{- end }}
+            {{- /* PVC mounts */}}
+            {{- range .Values.persistence }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath }}
+              readOnly: {{ .readOnly | default false }}
+            {{- end }}
+            {{- /* Arbitrary volume mounts */}}
+            {{- range .Values.volumeMounts }}
+            - mountPath: {{ .mountPath }}
+              name: {{ .name }}
+              readOnly: {{ .readOnly | default true }}
+            {{- end }}
+          {{- end }}
+
+      {{- if or .Values.volumeMounts .Values.persistence .Values.serviceToken $readOnly }}
+      volumes:
+        {{- if $readOnly }}
+        - name: tmp-scratch
+          emptyDir: {}
+        {{- end }}
+        {{- if and .Values.serviceToken .Values.serviceToken.enabled }}
+        - name: service-token
+          secret:
+            secretName: {{ include "single-container.name" . }}-service-token
+        {{- end }}
+        {{- range .Values.persistence }}
+        - name: {{ .name }}
+          persistentVolumeClaim:
+            claimName: {{ include "single-container.name" $ }}-{{ .name }}
+        {{- end }}
+        {{- /* Arbitrary volume definitions */}}
+        {{- range .Values.volumeMounts }}
+        - name: {{ .name }}
+          {{- toYaml .source | nindent 10 }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

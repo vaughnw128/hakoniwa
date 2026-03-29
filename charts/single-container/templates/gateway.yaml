@@ -1,0 +1,157 @@
+{{- if .Values.gateway }}
+{{- $type := default "gateway-api" .Values.gateway.type }}
+
+{{- if eq $type "gateway-api" }}
+# Dedicated Cilium Gateway API
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "single-container.name" . }}-gw
+  {{- if not .Values.gateway.public }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.gateway.clusterIssuer | default "local-issuer" }}
+  {{- end }}
+  labels:
+    {{- include "single-container.labels" . | nindent 4 }}
+spec:
+  gatewayClassName: cilium
+  infrastructure:
+    annotations:
+      external-dns.alpha.kubernetes.io/hostname: {{ .Values.gateway.hostname }}
+  listeners:
+    - protocol: HTTP
+      hostname: {{ .Values.gateway.hostname }}
+      port: 80
+      name: http
+    {{- if not .Values.gateway.public }}
+    - protocol: HTTPS
+      hostname: {{ .Values.gateway.hostname }}
+      port: 443
+      name: https
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ include "single-container.name" . }}-tls
+    {{- end }}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "single-container.name" . }}-route
+  labels:
+    {{- include "single-container.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "single-container.name" . }}-gw
+      namespace: {{ .Release.Namespace }}
+      {{- if not .Values.gateway.public }}
+      sectionName: https
+      {{- end }}
+  hostnames:
+    - {{ .Values.gateway.hostname | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ include "single-container.name" . }}
+          port: 80
+{{- if not .Values.gateway.public }}
+---
+# HTTPS redirect for the HTTP listener
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "single-container.name" . }}-https-redirect
+  labels:
+    {{- include "single-container.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "single-container.name" . }}-gw
+      sectionName: http
+      namespace: {{ .Release.Namespace }}
+  hostnames:
+    - {{ .Values.gateway.hostname | quote }}
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+{{- end }}
+
+{{- else if eq $type "gateway-api-shared" }}
+# Shared Gateway
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "single-container.name" . }}-route
+  labels:
+    {{- include "single-container.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.gateway.parentGatewayName | default "default-gateway" }}
+      namespace: {{ .Values.gateway.parentGatewayNamespace | default "default" }}
+      {{- if .Values.gateway.sectionName }}
+      sectionName: {{ .Values.gateway.sectionName }}
+      {{- end }}
+  hostnames:
+    - {{ .Values.gateway.hostname | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.gateway.pathPrefix | default "/" }}
+      backendRefs:
+        - name: {{ include "single-container.name" . }}
+          port: 80
+{{- if .Values.gateway.httpsRedirect }}
+---
+# HTTPS redirect for the shared gateway HTTP listener
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "single-container.name" . }}-https-redirect
+  labels:
+    {{- include "single-container.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.gateway.parentGatewayName | default "default-gateway" }}
+      namespace: {{ .Values.gateway.parentGatewayNamespace | default "default" }}
+      sectionName: {{ .Values.gateway.httpSectionName | default "http" }}
+  hostnames:
+    - {{ .Values.gateway.hostname | quote }}
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+{{- end }}
+
+{{- else if eq $type "cloudflare-tunnel" }}
+# Cloudflare Tunnel
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "single-container.name" . }}-ingress
+  labels:
+    {{- include "single-container.labels" . | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.gateway.ingressClassName | default "cloudflare-tunnel" }}
+  rules:
+    - host: {{ .Values.gateway.hostname }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "single-container.name" . }}
+                port:
+                  number: 80
+{{- end }}
+
+{{- end }}

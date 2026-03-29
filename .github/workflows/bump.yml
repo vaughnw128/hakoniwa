@@ -1,0 +1,102 @@
+name: Bump Version
+
+on:
+  workflow_call:
+    inputs:
+      new_version:
+        description: "The new version to bump to"
+        type: string
+        required: true
+      helm-path:
+        description: "Path to Helm chart directory (empty to skip helm)"
+        type: string
+        default: "./charts/single-container"
+      language:
+        description: "Primary language for version bumping: python, rust, or none"
+        type: string
+        default: "none"
+      push-helm-oci:
+        description: "Push Helm chart to OCI registry"
+        type: boolean
+        default: true
+      helm-registry:
+        description: "OCI registry for Helm charts"
+        type: string
+        default: "oci://ghcr.io/vaughnw128/charts"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  bump:
+    name: Bump Version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      # Lang specific bump
+      - name: Install uv
+        if: inputs.language == 'python'
+        uses: astral-sh/setup-uv@v5
+
+      - name: Bump uv package version
+        if: inputs.language == 'python'
+        run: uv version ${{ inputs.new_version }}
+
+      - name: Bump Cargo.toml version
+        if: inputs.language == 'rust'
+        run: |
+          sed -i '0,/^version = ".*"/s//version = "${{ inputs.new_version }}"/' Cargo.toml
+
+      # Chart version bump
+      - name: Update Helm chart version
+        if: inputs.helm-path != ''
+        uses: mikefarah/yq@v4.45.4
+        with:
+          cmd: |
+            yq -i '.version = "${{ inputs.new_version }}"' ${{ inputs.helm-path }}/Chart.yaml
+            yq -i '.appVersion = "${{ inputs.new_version }}"' ${{ inputs.helm-path }}/Chart.yaml
+
+      # Commit and push the bump
+      - name: Commit changes
+        run: |
+          git config --local user.email "195056476+synkronizedcd[bot]@users.noreply.github.com"
+          git config --local user.name "synkronizedcd[bot]"
+          git commit -am "chore: bump version to ${{ inputs.new_version }} [no ci]"
+
+      - name: Get app token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
+      - name: Push changes
+        uses: ad-m/github-push-action@v0.8.0
+        with:
+          branch: ${{ github.event.repository.default_branch }}
+          github_token: ${{ steps.app-token.outputs.token }}
+
+      # Push OCI Helm chart
+      - name: Login to GitHub Container Registry
+        if: inputs.push-helm-oci && inputs.helm-path != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Helm
+        if: inputs.push-helm-oci && inputs.helm-path != ''
+        uses: azure/setup-helm@v4.3.0
+
+      - name: Package and push Helm chart
+        if: inputs.push-helm-oci && inputs.helm-path != ''
+        run: |
+          helm package ${{ inputs.helm-path }} --version ${{ inputs.new_version }}
+          helm push ./${{ github.event.repository.name }}-${{ inputs.new_version }}.tgz ${{ inputs.helm-registry }}

@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "single-container.name" . }}
+  labels:
+    {{- include "single-container.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "single-container.selectorLabels" . | nindent 4 }}
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: {{ include "single-container.containerPort" . }}

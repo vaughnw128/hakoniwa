@@ -1,0 +1,19 @@
+# Rust base Dockerfile
+FROM rust:1.86 AS builder
+
+WORKDIR /build
+
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo "fn main() {}" > src/main.rs && \
+    cargo build --release && \
+    rm -rf src
+
+COPY . .
+RUN touch src/main.rs && cargo build --release
+
+# Runtime
+FROM cgr.dev/chainguard/glibc-dynamic:latest AS runtime
+
+COPY --from=builder /build/target/release/my-app /usr/local/bin/app
+
+ENTRYPOINT ["/usr/local/bin/app"]

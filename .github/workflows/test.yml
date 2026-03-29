@@ -1,0 +1,162 @@
+name: Code Quality & Tests
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: "Primary language: python, rust, go, or none"
+        type: string
+        required: true
+      helm-path:
+        description: "Path to Helm chart directory (empty to skip)"
+        type: string
+        default: ""
+      dockerfile:
+        description: "Path to Dockerfile for PR build test (empty to skip)"
+        type: string
+        default: "./Dockerfile"
+      python-version:
+        description: "Python version (only used when language=python)"
+        type: string
+        default: "3.13"
+      rust-toolchain:
+        description: "Rust toolchain (only used when language=rust)"
+        type: string
+        default: "stable"
+      go-version:
+        description: "Go version (only used when language=go)"
+        type: string
+        default: "1.22"
+      extra-test-command:
+        description: "Additional test command to run"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  code-quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Python
+      - name: Install uv
+        if: inputs.language == 'python'
+        uses: astral-sh/setup-uv@v5
+
+      - name: Ruff format check
+        if: inputs.language == 'python'
+        uses: astral-sh/ruff-action@v3
+        with:
+          args: "format --check"
+
+      - name: Ruff lint
+        if: inputs.language == 'python'
+        uses: astral-sh/ruff-action@v3
+
+      # Rust
+      - name: Setup Rust toolchain
+        if: inputs.language == 'rust'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-toolchain }}
+          components: rustfmt, clippy
+
+      - name: Rust format check
+        if: inputs.language == 'rust'
+        run: cargo fmt --check
+
+      - name: Clippy
+        if: inputs.language == 'rust'
+        run: cargo clippy -- -D warnings
+
+      # Go
+      - name: Setup Go
+        if: inputs.language == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go-version }}
+
+      - name: Go vet
+        if: inputs.language == 'go'
+        run: go vet ./...
+
+      - name: golangci-lint
+        if: inputs.language == 'go'
+        uses: golangci/golangci-lint-action@v6
+
+      # Helm
+      - name: Set up Helm
+        if: inputs.helm-path != ''
+        uses: azure/setup-helm@v4.3.0
+
+      - name: Helm lint
+        if: inputs.helm-path != ''
+        run: helm lint ${{ inputs.helm-path }}
+
+      - name: Helm template
+        if: inputs.helm-path != ''
+        run: helm template ${{ inputs.helm-path }}
+
+      # Docker build test
+      - name: Set up Docker Buildx
+        if: inputs.dockerfile != '' && github.event_name == 'pull_request'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image (test only)
+        if: inputs.dockerfile != '' && github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          file: ${{ inputs.dockerfile }}
+          push: false
+
+  tests:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Python
+      - name: Install uv
+        if: inputs.language == 'python'
+        uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        if: inputs.language == 'python'
+        run: uv sync --all-groups
+
+      - name: Pytest
+        if: inputs.language == 'python'
+        run: uv run pytest
+
+      # Rust
+      - name: Setup Rust toolchain
+        if: inputs.language == 'rust'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.rust-toolchain }}
+
+      - name: Cargo test
+        if: inputs.language == 'rust'
+        run: cargo test
+
+      # Go
+      - name: Setup Go
+        if: inputs.language == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ inputs.go-version }}
+
+      - name: Go test
+        if: inputs.language == 'go'
+        run: go test ./...
+
+      # Extra
+      - name: Run extra test command
+        if: inputs.extra-test-command != ''
+        run: ${{ inputs.extra-test-command }}

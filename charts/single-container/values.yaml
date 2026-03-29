@@ -1,0 +1,46 @@
+# hakoniwa / single-container chart
+
+name: "my-app"
+image: "ghcr.io/vaughnw128/my-app"
+# imageTag: "1.2.3"
+imagePullPolicy: IfNotPresent
+# imagePullSecrets: []
+
+replicas: 1
+revisionHistoryLimit: 1
+containerPort: 8080
+
+# resources: {}
+
+# securityContext: {}         # pod-level, secure defaults applied automatically
+# containerSecurityContext: {} # container-level, secure defaults applied automatically
+
+# livenessProbe: {}
+# readinessProbe: {}
+# startupProbe: {}   # must set enabled: true
+
+# envVars: {}        # plain-text env vars
+# secretVars: {}     # ENV_VAR: "vault-item/field" - pulled from 1Password via ExternalSecret
+
+secretStoreName: "1password-sdk"
+# secretRefreshInterval: "1h"
+
+# serviceToken: {}   # inter-service auth token, mounted as file + SERVICE_TOKEN_FILE env var
+
+# serviceAccount: {}
+# rbac: {}
+
+# gateway: {}        # type: gateway-api | gateway-api-shared | cloudflare-tunnel
+# tailscale: {}
+
+# db: {}             # secretName: <app>-pg-app, uriKey: uri-pooler-rw (default: uri)
+#   migrate: {}      # enabled: true, command: [...]
+
+# persistence: []    # - name, mountPath, size
+# volumeMounts: []   # - name, mountPath, source: {}
+
+# autoscaling: {}
+
+# nodeSelector: {}
+# affinity: {}
+# tolerations: []

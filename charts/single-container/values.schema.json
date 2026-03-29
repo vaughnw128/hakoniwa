@@ -1,0 +1,404 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Application name used for resource naming."
+    },
+    "image": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Container image (without tag; appVersion from Chart.yaml is used by default)."
+    },
+    "imageTag": {
+      "type": "string",
+      "description": "Override the image tag (defaults to Chart.appVersion)."
+    },
+    "imagePullPolicy": {
+      "type": "string",
+      "enum": ["Always", "IfNotPresent", "Never"],
+      "description": "Image pull policy."
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" }
+        },
+        "required": ["name"]
+      },
+      "description": "List of image pull secrets."
+    },
+    "replicas": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of pod replicas."
+    },
+    "revisionHistoryLimit": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of old ReplicaSets to retain."
+    },
+    "containerPort": {
+      "type": "integer",
+      "description": "Primary container port."
+    },
+    "resources": {
+      "type": "object",
+      "description": "Resource requests and limits.",
+      "properties": {
+        "requests": {
+          "type": "object",
+          "properties": {
+            "memory": { "type": "string" },
+            "cpu": { "type": "string" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "properties": {
+            "memory": { "type": "string" },
+            "cpu": { "type": "string" }
+          }
+        }
+      }
+    },
+    "securityContext": {
+      "type": "object",
+      "description": "Pod-level security context. Secure defaults: runAsNonRoot=true, runAsUser/runAsGroup/fsGroup=65532, seccompProfile=RuntimeDefault.",
+      "properties": {
+        "runAsUser": { "type": "integer" },
+        "runAsGroup": { "type": "integer" },
+        "fsGroup": { "type": "integer" },
+        "runAsNonRoot": { "type": "boolean" },
+        "seccompProfile": {
+          "type": "object",
+          "properties": {
+            "type": { "type": "string", "enum": ["RuntimeDefault", "Localhost", "Unconfined"] },
+            "localhostProfile": { "type": "string" }
+          }
+        }
+      }
+    },
+    "containerSecurityContext": {
+      "type": "object",
+      "description": "Container-level security context. Secure defaults: allowPrivilegeEscalation=false, readOnlyRootFilesystem=true, capabilities.drop=[ALL].",
+      "properties": {
+        "allowPrivilegeEscalation": { "type": "boolean" },
+        "readOnlyRootFilesystem": { "type": "boolean" },
+        "capabilities": {
+          "type": "object",
+          "properties": {
+            "drop": { "type": "array", "items": { "type": "string" } },
+            "add": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "livenessProbe": {
+      "type": "object",
+      "description": "Liveness probe configuration.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "httpGet": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" },
+            "port": { "type": ["integer", "string"] }
+          }
+        },
+        "exec": {
+          "type": "object",
+          "properties": {
+            "command": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "initialDelaySeconds": { "type": "integer" },
+        "periodSeconds": { "type": "integer" },
+        "timeoutSeconds": { "type": "integer" },
+        "failureThreshold": { "type": "integer" }
+      }
+    },
+    "readinessProbe": {
+      "type": "object",
+      "description": "Readiness probe configuration.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "httpGet": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" },
+            "port": { "type": ["integer", "string"] }
+          }
+        },
+        "exec": {
+          "type": "object",
+          "properties": {
+            "command": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "initialDelaySeconds": { "type": "integer" },
+        "periodSeconds": { "type": "integer" },
+        "timeoutSeconds": { "type": "integer" },
+        "failureThreshold": { "type": "integer" }
+      }
+    },
+    "startupProbe": {
+      "type": "object",
+      "description": "Startup probe configuration.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "httpGet": {
+          "type": "object",
+          "properties": {
+            "path": { "type": "string" },
+            "port": { "type": ["integer", "string"] }
+          }
+        },
+        "exec": {
+          "type": "object",
+          "properties": {
+            "command": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "initialDelaySeconds": { "type": "integer" },
+        "periodSeconds": { "type": "integer" },
+        "timeoutSeconds": { "type": "integer" },
+        "failureThreshold": { "type": "integer" }
+      }
+    },
+    "secretVars": {
+      "type": "object",
+      "description": "Secret env vars. Format: SECRET_NAME: 'vault-item/field'",
+      "additionalProperties": { "type": "string" }
+    },
+    "envVars": {
+      "type": "object",
+      "description": "Plain-text environment variables.",
+      "additionalProperties": { "type": "string" }
+    },
+    "secretStoreName": {
+      "type": "string",
+      "description": "ClusterSecretStore name for all ExternalSecrets (default: 1password-sdk)."
+    },
+    "serviceToken": {
+      "type": "object",
+      "description": "Service-to-service auth token (creates a separate ExternalSecret).",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "mountPath": { "type": "string", "description": "Mount path for token file (default: /app/secrets/service_token)." },
+        "generatorName": { "type": "string", "description": "ClusterGenerator name for token generation." },
+        "vaultItem": { "type": "string", "description": "Vault item for direct lookup (alternative to generatorName)." },
+        "vaultField": { "type": "string", "description": "Vault field for direct lookup (default: credential)." },
+        "refreshInterval": { "type": "string", "description": "Refresh interval (default: 1h)." }
+      }
+    },
+    "externalSecrets": {
+      "type": "object",
+      "description": "Verbose ExternalSecret fallback (only used if secretVars is NOT set).",
+      "properties": {
+        "refreshInterval": { "type": "string" },
+        "secretStoreName": { "type": "string" },
+        "secretStoreKind": { "type": "string" },
+        "secrets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "secretKey": { "type": "string" },
+              "remoteRef": {
+                "type": "object",
+                "properties": {
+                  "key": { "type": "string" },
+                  "property": { "type": "string" }
+                },
+                "required": ["key", "property"]
+              }
+            },
+            "required": ["secretKey", "remoteRef"]
+          }
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "description": "ServiceAccount configuration.",
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" },
+        "automount": { "type": "boolean" },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "description": "RBAC Role + RoleBinding configuration.",
+      "properties": {
+        "create": { "type": "boolean" },
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "apiGroups": { "type": "array", "items": { "type": "string" } },
+              "resources": { "type": "array", "items": { "type": "string" } },
+              "verbs": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        }
+      }
+    },
+    "secretStoreName": {
+      "type": "string",
+      "description": "ClusterSecretStore name for all ExternalSecrets (default: secretstore-onepassword)."
+    },
+    "secretRefreshInterval": {
+      "type": "string",
+      "description": "Refresh interval for auto-generated ExternalSecrets from secretVars."
+    },
+    "gateway": {
+      "type": "object",
+      "description": "Networking / ingress configuration.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["gateway-api", "gateway-api-shared", "cloudflare-tunnel"],
+          "description": "Ingress strategy."
+        },
+        "hostname": { "type": "string", "description": "Public hostname for the app." },
+        "containerPort": { "type": "integer", "description": "Override container port for gateway backends." },
+        "public": { "type": "boolean", "description": "If false, enables HTTPS with cert-manager (gateway-api only)." },
+        "clusterIssuer": { "type": "string", "description": "cert-manager ClusterIssuer name (gateway-api only, default: local-issuer)." },
+        "parentGatewayName": { "type": "string", "description": "Shared gateway name (gateway-api-shared only, default: default-gateway)." },
+        "parentGatewayNamespace": { "type": "string", "description": "Shared gateway namespace (gateway-api-shared only, default: default)." },
+        "sectionName": { "type": "string", "description": "Listener section to target on the shared gateway." },
+        "pathPrefix": { "type": "string", "description": "Path prefix for HTTPRoute match (default: /)." },
+        "httpsRedirect": { "type": "boolean", "description": "Create HTTP->HTTPS redirect route (gateway-api-shared only)." },
+        "httpSectionName": { "type": "string", "description": "Section name for the HTTP redirect parent (default: http)." },
+        "ingressClassName": { "type": "string", "description": "Ingress class (cloudflare-tunnel only, default: cloudflare-tunnel)." }
+      },
+      "required": ["hostname"]
+    },
+    "tailscale": {
+      "type": "object",
+      "description": "Tailscale ingress configuration.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "hostname": { "type": "string" }
+      }
+    },
+    "db": {
+      "type": "object",
+      "description": "CloudNativePG database configuration. Reads credentials from an existing Kubernetes Secret created by the immanent-grove ExternalSecret (e.g. 'sbux-oracle-pg-app').",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "secretName": {
+          "type": "string",
+          "description": "Name of the existing credentials Secret (e.g. 'sbux-oracle-pg-app'). Required when enabled: true."
+        },
+        "uriKey": {
+          "type": "string",
+          "enum": ["uri", "uri-pooler-rw", "uri-pooler-ro"],
+          "description": "Key in the secret to expose as DATABASE_URL for the app (default: uri). Migration jobs always use 'uri' regardless of this setting."
+        },
+        "migrate": {
+          "type": "object",
+          "description": "Database migration Job (Helm pre-install/pre-upgrade hook).",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "command": { "type": "array", "items": { "type": "string" }, "description": "Migration command (e.g. [\"alembic\", \"upgrade\", \"head\"])." },
+            "image": { "type": "string", "description": "Override image (defaults to app image)." },
+            "backoffLimit": { "type": "integer", "description": "Number of retry attempts (default: 3)." },
+            "hookWeight": { "type": "string", "description": "Helm hook weight for ordering (default: \"0\")." },
+            "ttlSecondsAfterFinished": { "type": "integer", "description": "Seconds before cleaning up completed Job." },
+            "env": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Additional env vars for migration." },
+            "resources": {
+              "type": "object",
+              "properties": {
+                "requests": { "type": "object", "properties": { "memory": { "type": "string" }, "cpu": { "type": "string" } } },
+                "limits": { "type": "object", "properties": { "memory": { "type": "string" }, "cpu": { "type": "string" } } }
+              }
+            }
+          },
+          "required": ["enabled", "command"]
+        }
+      }
+    },
+    "persistence": {
+      "type": "array",
+      "description": "PVC definitions.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "mountPath": { "type": "string" },
+          "size": { "type": "string" },
+          "accessModes": { "type": "array", "items": { "type": "string" } },
+          "storageClass": { "type": "string" },
+          "readOnly": { "type": "boolean" }
+        },
+        "required": ["name", "mountPath", "size"]
+      }
+    },
+    "volumeMounts": {
+      "type": "array",
+      "description": "Additional arbitrary volume mounts.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "mountPath": { "type": "string" },
+          "readOnly": { "type": "boolean" },
+          "source": { "type": "object" }
+        },
+        "required": ["name", "mountPath"]
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "description": "Horizontal Pod Autoscaler configuration.",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minReplicas": { "type": "integer" },
+        "maxReplicas": { "type": "integer" },
+        "targetCPUUtilizationPercentage": { "type": "integer" },
+        "targetMemoryUtilizationPercentage": { "type": "integer" },
+        "scaleDown": {
+          "type": "object",
+          "properties": {
+            "stabilizationWindowSeconds": { "type": "integer" },
+            "maxPods": { "type": "integer" },
+            "periodSeconds": { "type": "integer" }
+          }
+        },
+        "scaleUp": {
+          "type": "object",
+          "properties": {
+            "stabilizationWindowSeconds": { "type": "integer" },
+            "maxPods": { "type": "integer" },
+            "periodSeconds": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": { "type": "string" }
+    },
+    "affinity": {
+      "type": "object"
+    },
+    "tolerations": {
+      "type": "array",
+      "items": { "type": "object" }
+    }
+  },
+  "required": ["name", "image"],
+  "additionalProperties": true
+}
