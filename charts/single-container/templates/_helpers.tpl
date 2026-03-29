@@ -1,5 +1,5 @@
 {{- define "single-container.name" -}}
-{{- default .Values.name .Chart.Name | lower | trunc 63 | trimSuffix "-" }}
+{{- default .Chart.Name .Values.name | lower | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{- define "single-container.fullname" -}}

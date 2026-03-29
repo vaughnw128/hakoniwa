@@ -6,7 +6,8 @@
     "docker:enableMajor",
     ":semanticCommits",
     ":automergeMinor",
-    ":automergePatch"
+    ":automergePatch",
+    ":semanticPrefixFixDepsChoreOthers"
   ],
   "labels": ["dependencies"],
   "packageRules": [
