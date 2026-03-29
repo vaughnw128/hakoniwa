@@ -1,0 +1,21 @@
+# Checkov skip configuration for hakoniwa
+#
+# CKV_DOCKER_7: Chainguard images (cgr.dev) intentionally do not publish
+#   versioned tags — only :latest and digest pins. Pinning by digest is
+#   handled at the app repo level via Renovate.
+#
+# CKV_DOCKER_2: HEALTHCHECK is app-specific and intentionally absent from
+#   these base template Dockerfiles.
+#
+# CKV_DOCKER_3: Chainguard runtime images (python, glibc-dynamic, static)
+#   run as uid 65532 (nonroot) by default. Checkov cannot detect this from
+#   the FROM line alone.
+#
+# CKV_SECRET_6: False positives on example placeholder strings in comments,
+#   schema descriptions, and store names (not actual secrets).
+
+skip-check:
+  - CKV_DOCKER_7
+  - CKV_DOCKER_2
+  - CKV_DOCKER_3
+  - CKV_SECRET_6
