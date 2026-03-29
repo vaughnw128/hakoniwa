@@ -98,5 +98,6 @@ jobs:
       - name: Package and push Helm chart
         if: inputs.push-helm-oci && inputs.helm-path != ''
         run: |
+          helm dependency build ${{ inputs.helm-path }}
           helm package ${{ inputs.helm-path }} --version ${{ inputs.new_version }}
           helm push ./${{ github.event.repository.name }}-${{ inputs.new_version }}.tgz ${{ inputs.helm-registry }}
