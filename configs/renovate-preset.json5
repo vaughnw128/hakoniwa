@@ -6,7 +6,9 @@
     "docker:enableMajor",
     ":semanticCommits",
     ":automergeMinor",
-    ":automergePatch"
+    ":automergePatch",
+    "uv:enableUv",
+    ":disablePoetry"
   ],
   "labels": ["dependencies"],
   "packageRules": [
@@ -33,7 +35,7 @@
     },
     {
       "description": "Group Python dependency updates",
-      "matchManagers": ["pip_requirements", "pip-compile", "poetry", "pep621"],
+      "matchManagers": ["pip_requirements", "pip-compile", "pep621", "uv"],
       "groupName": "python dependencies"
     }
   ],
