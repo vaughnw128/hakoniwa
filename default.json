@@ -5,17 +5,18 @@
     "config:recommended",
     "docker:enableMajor",
     ":semanticCommits",
-    ":automergeMinor",
-    ":automergePatch",
     ":semanticCommitTypeAll(fix)"
   ],
+  "automerge": true,
+  "automergeType": "pr",
   "labels": ["dependencies"],
   "packageRules": [
     {
       "description": "Group all non-major updates",
       "matchUpdateTypes": ["minor", "patch", "digest"],
       "groupName": "all non-major dependencies",
-      "groupSlug": "all-minor-patch"
+      "groupSlug": "all-minor-patch",
+      "automerge": true
     },
     {
       "description": "Auto-merge dev dependencies",
