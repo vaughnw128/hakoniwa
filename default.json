@@ -7,7 +7,7 @@
     ":semanticCommits",
     ":automergeMinor",
     ":automergePatch",
-    ":semanticPrefixFixDepsChoreOthers"
+    ":semanticCommitTypeAll(fix)"
   ],
   "labels": ["dependencies"],
   "packageRules": [

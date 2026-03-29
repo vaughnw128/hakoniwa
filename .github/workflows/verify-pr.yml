@@ -2,6 +2,11 @@ name: Verify PR
 
 on:
   workflow_call:
+    inputs:
+      pr-title:
+        description: "The pull request title to validate"
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -11,21 +16,13 @@ jobs:
     name: PR Quality
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Check Semantic Release
-        uses: cycjimmy/semantic-release-action@v4
-        id: tag
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          dry_run: true
-
       - name: Verify version increment
-        if: steps.tag.outputs.new_release_version == steps.tag.outputs.last_release_version
+        env:
+          PR_TITLE: ${{ inputs.pr-title }}
         run: |
-          echo "::error::PR will not increment the version. Ensure the PR title follows Conventional Commits (feat:, fix:, etc.)."
-          exit 1
+          if echo "$PR_TITLE" | grep -qP '^(feat|fix|perf|revert|feat!|fix!|perf!)(\(.+\))?!?:\s.+'; then
+            echo "PR title follows Conventional Commits: $PR_TITLE"
+          else
+            echo "::error::PR title does not follow Conventional Commits. Got: '$PR_TITLE'. Expected format: 'type(scope): description' where type is feat, fix, perf, or revert."
+            exit 1
+          fi
