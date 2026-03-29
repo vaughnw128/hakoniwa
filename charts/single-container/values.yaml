@@ -1,4 +1,4 @@
-# hakoniwa / single-container chart
+# hakoniwa single-container chart
 
 name: "my-app"
 image: "ghcr.io/vaughnw128/my-app"
