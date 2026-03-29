@@ -1,4 +1,46 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>vaughnw128/hakoniwa:configs/renovate-preset"]
+  "description": "Shared Renovate preset",
+  "extends": [
+    "config:recommended",
+    "docker:enableMajor",
+    ":semanticCommits",
+    ":automergeMinor",
+    ":automergePatch",
+    "uv:enableUv",
+    ":disablePoetry"
+  ],
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "Group all non-major updates",
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "all non-major dependencies",
+      "groupSlug": "all-minor-patch"
+    },
+    {
+      "description": "Auto-merge dev dependencies",
+      "matchDepTypes": ["devDependencies"],
+      "automerge": true
+    },
+    {
+      "description": "Pin GitHub Actions digests for supply chain security",
+      "matchManagers": ["github-actions"],
+      "pinDigests": true
+    },
+    {
+      "description": "Group Rust crate updates",
+      "matchManagers": ["cargo"],
+      "groupName": "rust dependencies"
+    },
+    {
+      "description": "Group Python dependency updates",
+      "matchManagers": ["pip_requirements", "pip-compile", "pep621", "uv"],
+      "groupName": "python dependencies"
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security"]
+  }
 }
