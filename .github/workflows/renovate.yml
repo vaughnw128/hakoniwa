@@ -3,6 +3,8 @@ name: Renovate
 on:
   workflow_call:
 
+permissions: {}
+
 jobs:
   renovate:
     name: Renovate

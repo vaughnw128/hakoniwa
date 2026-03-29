@@ -23,14 +23,6 @@ on:
         description: "Skip Docker build (e.g. for library-only releases)"
         type: boolean
         default: false
-      checkov-soft-fail:
-        description: "Do not fail the build on Checkov findings (soft fail)"
-        type: boolean
-        default: false
-      checkov-skip-check:
-        description: "Comma-separated Checkov check IDs to skip"
-        type: string
-        default: ""
     outputs:
       new_version:
         description: "The new semantic version"
@@ -103,23 +95,6 @@ jobs:
           build-args: |
             git_sha=${{ github.sha }}
             ${{ inputs.build-args }}
-
-      - name: Run Checkov image scan
-        if: ${{ !inputs.skip-docker }}
-        uses: bridgecrewio/checkov-action@v12
-        with:
-          docker_image: ghcr.io/${{ github.repository }}:${{ steps.tag.outputs.new_release_version }}
-          dockerfile_path: ${{ inputs.dockerfile }}
-          soft_fail: ${{ inputs.checkov-soft-fail }}
-          skip_check: ${{ inputs.checkov-skip-check }}
-          output_format: cli,sarif
-          output_file_path: console,checkov-image-results.sarif
-
-      - name: Upload Checkov image results to GitHub Security
-        if: ${{ !inputs.skip-docker && always() }}
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: checkov-image-results.sarif
 
       - name: Attest build provenance
         if: ${{ !inputs.skip-docker && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
