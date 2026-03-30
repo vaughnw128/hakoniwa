@@ -61,7 +61,7 @@ jobs:
           cmd: |
             yq -i '.version = "${{ inputs.new_version }}"' ${{ inputs.helm-path }}/Chart.yaml
             yq -i '.appVersion = "${{ inputs.new_version }}"' ${{ inputs.helm-path }}/Chart.yaml
-            yq -i '.single-container.imageTag = "${{ inputs.new_version }}"' ${{ inputs.helm-path }}/Values.yaml
+            yq -i '.single-container.imageTag = "${{ inputs.new_version }}"' ${{ inputs.helm-path }}/values.yaml
 
       # Commit and push the bump
       - name: Commit changes
