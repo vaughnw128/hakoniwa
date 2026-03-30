@@ -42,7 +42,7 @@ jobs:
       # Lang specific bump
       - name: Install uv
         if: inputs.language == 'python'
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v8
 
       - name: Bump uv package version
         if: inputs.language == 'python'
@@ -93,7 +93,7 @@ jobs:
 
       - name: Set up Helm
         if: inputs.push-helm-oci && inputs.helm-path != ''
-        uses: azure/setup-helm@v4.3.0
+        uses: azure/setup-helm@v5
 
       - name: Package and push Helm chart
         if: inputs.push-helm-oci && inputs.helm-path != ''
