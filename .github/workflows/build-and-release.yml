@@ -24,8 +24,12 @@ on:
         type: boolean
         default: false
     outputs:
-      new_version: ${{ jobs.build.outputs.new_version }}
-      image: ${{ jobs.build.outputs.image }}
+      new_version:
+        description: "The new semantic version"
+        value: ${{ jobs.build.outputs.new_version }}
+      image:
+        description: "Full image reference with tag"
+        value: ${{ jobs.build.outputs.image }}
 
 permissions:
   contents: write
@@ -119,7 +123,7 @@ jobs:
     if: ${{ needs.build.outputs.image != '' }}
     uses: vaughnw128/hakoniwa/.github/workflows/code-scanning.yml@main
     with:
-      language: ""
+      language: "none"
       skip-codeql: true
       skip-semgrep: true
       skip-checkov: true
