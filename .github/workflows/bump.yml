@@ -42,7 +42,7 @@ jobs:
       # Lang specific bump
       - name: Install uv
         if: inputs.language == 'python'
-        uses: astral-sh/setup-uv@v8
+        uses: astral-sh/setup-uv@v6
 
       - name: Bump uv package version
         if: inputs.language == 'python'
