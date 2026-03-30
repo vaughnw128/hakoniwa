@@ -35,11 +35,16 @@ on:
         description: "Comma-separated Checkov check IDs to skip"
         type: string
         default: ""
+      grype-image:
+        description: "Full image reference to scan with Grype (empty to skip)"
+        type: string
+        default: ""
 
 permissions:
   contents: read
   security-events: write
   actions: read
+  packages: read
 
 jobs:
   codeql:
@@ -52,7 +57,7 @@ jobs:
         language: ${{ fromJson(inputs.codeql-languages) }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
@@ -76,7 +81,7 @@ jobs:
       image: semgrep/semgrep
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Run Semgrep
         run: semgrep scan --config ${{ inputs.semgrep-rules }} --sarif --output semgrep-results.sarif .
@@ -96,7 +101,7 @@ jobs:
     if: ${{ !inputs.skip-checkov }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@v12
@@ -113,3 +118,31 @@ jobs:
         with:
           sarif_file: checkov-results.sarif
           category: checkov
+
+  grype:
+    name: Grype Container Scan
+    runs-on: ubuntu-latest
+    if: ${{ inputs.grype-image != '' }}
+    steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Scan image with Grype
+        uses: anchore/scan-action@v6
+        id: grype
+        with:
+          image: ${{ inputs.grype-image }}
+          fail-build: false
+          severity-cutoff: high
+          output-format: sarif
+
+      - name: Upload Grype results to GitHub Security
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: grype

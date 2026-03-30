@@ -17,7 +17,7 @@ jobs:
   security:
     uses: ./.github/workflows/code-scanning.yml
     with:
-      language: ""
+      language: "none"
       skip-codeql: true
       skip-semgrep: true
       checkov-soft-fail: false

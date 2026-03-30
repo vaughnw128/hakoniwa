@@ -24,18 +24,16 @@ on:
         type: boolean
         default: false
     outputs:
-      new_version:
-        description: "The new semantic version"
-        value: ${{ jobs.build.outputs.new_version }}
-      image:
-        description: "Full image reference with tag"
-        value: ${{ jobs.build.outputs.image }}
+      new_version: ${{ jobs.build.outputs.new_version }}
+      image: ${{ jobs.build.outputs.image }}
 
 permissions:
   contents: write
   packages: write
   id-token: write
   attestations: write
+  security-events: write
+  actions: read
 
 jobs:
   build:
@@ -47,7 +45,7 @@ jobs:
       image: ${{ steps.image-ref.outputs.image }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Dry run release to get version
       - name: Get Tag
@@ -114,3 +112,16 @@ jobs:
         uses: cycjimmy/semantic-release-action@v4
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+
+  grype:
+    name: Grype Container Scan
+    needs: build
+    if: ${{ needs.build.outputs.image != '' }}
+    uses: vaughnw128/hakoniwa/.github/workflows/code-scanning.yml@main
+    with:
+      language: ""
+      skip-codeql: true
+      skip-semgrep: true
+      skip-checkov: true
+      grype-image: ${{ needs.build.outputs.image }}
+    secrets: inherit

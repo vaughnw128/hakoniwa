@@ -28,7 +28,7 @@ jobs:
         target: ${{ fromJson(inputs.targets) }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false

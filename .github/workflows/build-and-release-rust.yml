@@ -28,6 +28,8 @@ permissions:
   packages: write
   id-token: write
   attestations: write
+  security-events: write
+  actions: read
 
 jobs:
   # Get the version first so binary builds and docker build share it
@@ -38,7 +40,7 @@ jobs:
     outputs:
       new_version: ${{ steps.tag.outputs.new_release_version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Get Tag (dry run)
         uses: cycjimmy/semantic-release-action@v4
@@ -74,7 +76,7 @@ jobs:
       new_version: ${{ needs.version.outputs.new_version }}
       image: ${{ steps.image-ref.outputs.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set image reference
         id: image-ref
@@ -143,3 +145,16 @@ jobs:
         uses: cycjimmy/semantic-release-action@v4
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+
+  grype:
+    name: Grype Container Scan
+    needs: release
+    if: ${{ needs.release.outputs.image != '' }}
+    uses: vaughnw128/hakoniwa/.github/workflows/code-scanning.yml@main
+    with:
+      language: ""
+      skip-codeql: true
+      skip-semgrep: true
+      skip-checkov: true
+      grype-image: ${{ needs.release.outputs.image }}
+    secrets: inherit
