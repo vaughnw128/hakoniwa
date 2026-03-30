@@ -135,6 +135,7 @@ jobs:
         if: inputs.language != 'rust' && inputs.dockerfile != '' && github.event_name == 'pull_request'
         uses: docker/build-push-action@v6
         with:
+          context: .
           file: ${{ inputs.dockerfile }}
           push: false
 
@@ -142,6 +143,7 @@ jobs:
         if: inputs.language == 'rust' && inputs.binary-name != '' && inputs.dockerfile != '' && github.event_name == 'pull_request'
         uses: docker/build-push-action@v6
         with:
+          context: .
           file: ${{ inputs.dockerfile }}
           push: false
           platforms: linux/amd64
