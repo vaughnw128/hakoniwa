@@ -133,13 +133,13 @@ spec:
             {{- range .Values.persistence }}
             - name: {{ .name }}
               mountPath: {{ .mountPath }}
-              readOnly: {{ .readOnly | default false }}
+              readOnly: {{ if hasKey . "readOnly" }}{{ .readOnly }}{{ else }}false{{ end }}
             {{- end }}
             {{- /* Arbitrary volume mounts */}}
             {{- range .Values.volumeMounts }}
             - mountPath: {{ .mountPath }}
               name: {{ .name }}
-              readOnly: {{ .readOnly | default true }}
+              readOnly: {{ if hasKey . "readOnly" }}{{ .readOnly }}{{ else }}true{{ end }}
             {{- end }}
           {{- end }}
 

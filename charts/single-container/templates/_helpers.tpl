@@ -56,9 +56,9 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "single-container.podSecurityContext" -}}
 {{- $sc := default (dict) .Values.securityContext }}
 runAsNonRoot: {{ if hasKey $sc "runAsNonRoot" }}{{ $sc.runAsNonRoot }}{{ else }}true{{ end }}
-runAsUser: {{ $sc.runAsUser | default 65532 }}
-runAsGroup: {{ $sc.runAsGroup | default 65532 }}
-fsGroup: {{ $sc.fsGroup | default 65532 }}
+runAsUser: {{ if hasKey $sc "runAsUser" }}{{ $sc.runAsUser }}{{ else }}65532{{ end }}
+runAsGroup: {{ if hasKey $sc "runAsGroup" }}{{ $sc.runAsGroup }}{{ else }}65532{{ end }}
+fsGroup: {{ if hasKey $sc "fsGroup" }}{{ $sc.fsGroup }}{{ else }}65532{{ end }}
 seccompProfile:
   type: {{ ($sc.seccompProfile).type | default "RuntimeDefault" }}
 {{- with (omit $sc "runAsNonRoot" "runAsUser" "runAsGroup" "fsGroup" "seccompProfile") }}
