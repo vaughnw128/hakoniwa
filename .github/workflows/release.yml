@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  workflow_call:
+    inputs:
+      language:
+        description: "Primary language: python, rust, go, or none."
+        type: string
+        default: "none"
+      binary-name:
+        description: "Binary name (required when language=rust). Matches Cargo.toml package name."
+        type: string
+        default: ""
+      dockerfile:
+        description: "Path to Dockerfile."
+        type: string
+        default: "./Dockerfile"
+      build-context:
+        description: "Docker build context."
+        type: string
+        default: "."
+      build-args:
+        description: "Extra Docker build-args (newline-separated KEY=VALUE)."
+        type: string
+        default: ""
+      platforms:
+        description: "Docker platforms (comma-separated). Rust path always uses linux/amd64,linux/arm64."
+        type: string
+        default: "linux/amd64"
+      skip-docker:
+        description: "Skip the container build entirely (library-only releases)."
+        type: boolean
+        default: false
+      helm-path:
+        description: "Path to the Helm chart to bump and publish (empty to skip)."
+        type: string
+        default: ""
+      push-helm-oci:
+        description: "Push the bumped Helm chart to the OCI registry."
+        type: boolean
+        default: true
+      helm-registry:
+        description: "OCI registry for published Helm charts."
+        type: string
+        default: "oci://ghcr.io/vaughnw128/charts"
+    outputs:
+      new-version:
+        description: "Newly released semantic version (empty when no release was cut)."
+        value: ${{ jobs.version.outputs.version }}
+      image:
+        description: "Published image reference (repo:version). Empty when skip-docker."
+        value: ${{ jobs.meta.outputs.image }}
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+  security-events: write
+  actions: read
+
+jobs:
+  version:
+    uses: vaughnw128/hakoniwa/.github/workflows/semantic-version.yml@main
+    secrets: inherit
+
+  meta:
+    name: Resolve Image Reference
+    runs-on: ubuntu-latest
+    needs: version
+    if: ${{ needs.version.outputs.version != '' && !inputs.skip-docker }}
+    outputs:
+      image: ${{ steps.ref.outputs.image }}
+    steps:
+      - id: ref
+        shell: bash
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:${{ needs.version.outputs.version }}" >> "$GITHUB_OUTPUT"
+
+  # Rust-only: pre-build per-target binaries that container-build will COPY in.
+  build-rust-amd64:
+    needs: version
+    if: ${{ needs.version.outputs.version != '' && !inputs.skip-docker && inputs.language == 'rust' }}
+    uses: vaughnw128/hakoniwa/.github/workflows/build-rust-binary.yml@main
+    with:
+      target: x86_64-unknown-linux-gnu
+      binary-name: ${{ inputs.binary-name }}
+
+  build-rust-arm64:
+    needs: version
+    if: ${{ needs.version.outputs.version != '' && !inputs.skip-docker && inputs.language == 'rust' }}
+    uses: vaughnw128/hakoniwa/.github/workflows/build-rust-binary.yml@main
+    with:
+      target: aarch64-unknown-linux-gnu
+      binary-name: ${{ inputs.binary-name }}
+
+  container:
+    name: Build Container
+    needs: [version, meta, build-rust-amd64, build-rust-arm64]
+    # Run when version is cut, docker not skipped, and (rust path completed OR non-rust path).
+    if: |
+      always()
+      && needs.version.outputs.version != ''
+      && !inputs.skip-docker
+      && (inputs.language != 'rust' || (needs.build-rust-amd64.result == 'success' && needs.build-rust-arm64.result == 'success'))
+    uses: vaughnw128/hakoniwa/.github/workflows/container-build.yml@main
+    with:
+      dockerfile: ${{ inputs.dockerfile }}
+      build-context: ${{ inputs.build-context }}
+      platforms: ${{ inputs.language == 'rust' && 'linux/amd64,linux/arm64' || inputs.platforms }}
+      push: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+      tags: |
+        ghcr.io/${{ github.repository }}:${{ needs.version.outputs.version }}
+        ghcr.io/${{ github.repository }}:latest
+      build-args: |
+        git_sha=${{ github.sha }}
+        ${{ inputs.language == 'rust' && format('BINARY_NAME={0}', inputs.binary-name) || '' }}
+        ${{ inputs.build-args }}
+      artifact-amd64-name: ${{ inputs.language == 'rust' && format('{0}-x86_64-unknown-linux-gnu', inputs.binary-name) || '' }}
+      artifact-arm64-name: ${{ inputs.language == 'rust' && format('{0}-aarch64-unknown-linux-gnu', inputs.binary-name) || '' }}
+      executable-paths: |
+        ${{ inputs.language == 'rust' && format('dist/linux/amd64/{0}', inputs.binary-name) || '' }}
+        ${{ inputs.language == 'rust' && format('dist/linux/arm64/{0}', inputs.binary-name) || '' }}
+    secrets: inherit
+
+  attest:
+    name: Attest Build Provenance
+    needs: [version, container]
+    if: ${{ needs.version.outputs.version != '' && !inputs.skip-docker && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ needs.container.outputs.digest }}
+          push-to-registry: true
+
+  scan:
+    name: Grype Image Scan
+    needs: [version, meta, container]
+    if: ${{ needs.version.outputs.version != '' && !inputs.skip-docker && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scan image with Grype
+        uses: anchore/scan-action@v6
+        id: grype
+        with:
+          image: ${{ needs.meta.outputs.image }}
+          fail-build: false
+          severity-cutoff: high
+          output-format: sarif
+
+      - name: Upload Grype results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: grype
+
+  release:
+    name: Semantic Release
+    needs: [version, container]
+    if: ${{ always() && needs.version.outputs.version != '' && (inputs.skip-docker || needs.container.result == 'success') }}
+    uses: vaughnw128/hakoniwa/.github/workflows/semantic-release.yml@main
+    secrets: inherit
+
+  bump:
+    name: Bump Version
+    needs: [version, release]
+    if: ${{ needs.version.outputs.version != '' && needs.release.result == 'success' }}
+    uses: vaughnw128/hakoniwa/.github/workflows/bump.yml@main
+    with:
+      new_version: ${{ needs.version.outputs.version }}
+      language: ${{ inputs.language }}
+      helm-path: ${{ inputs.helm-path }}
+      push-helm-oci: ${{ inputs.push-helm-oci }}
+      helm-registry: ${{ inputs.helm-registry }}
+    secrets: inherit

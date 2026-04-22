@@ -1,0 +1,102 @@
+name: PR Preview Teardown
+
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: "Pull request number being closed."
+        type: string
+        required: true
+      head-sha:
+        description: "Head SHA of the closed PR (for metadata only)."
+        type: string
+        required: true
+      chart-name:
+        description: "Helm chart name. Defaults to repo name."
+        type: string
+        default: ""
+      kube-namespace:
+        description: "Kubernetes namespace where preview releases live."
+        type: string
+        default: "previews"
+      delete-image-tags:
+        description: "Also delete the floating PR image tag from GHCR."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+  pull-requests: write
+
+jobs:
+  meta:
+    uses: vaughnw128/hakoniwa/.github/workflows/preview-meta.yml@main
+    with:
+      pr-number: ${{ inputs.pr-number }}
+      head-sha: ${{ inputs.head-sha }}
+      chart-name: ${{ inputs.chart-name }}
+
+  teardown:
+    name: Tear Down Preview
+    needs: meta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: azure/setup-helm@v5
+
+      - name: Configure kubeconfig
+        if: ${{ env.KUBECONFIG_B64 != '' }}
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "$KUBECONFIG_B64" | base64 -d > "$HOME/.kube/config"
+          echo "KUBECONFIG=$HOME/.kube/config" >> "$GITHUB_ENV"
+
+      - name: Helm uninstall preview release
+        if: ${{ env.KUBECONFIG != '' }}
+        run: |
+          helm uninstall "${{ needs.meta.outputs.release_name }}" \
+            --namespace "${{ inputs.kube-namespace }}" \
+            --ignore-not-found
+
+      - name: Delete floating PR image tag
+        if: ${{ inputs.delete-image-tags }}
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const tag = "${{ needs.meta.outputs.image_tag_floating }}";
+            const pkg = context.repo.repo;
+            try {
+              const versions = await github.paginate(
+                github.rest.packages.getAllPackageVersionsForPackageOwnedByUser,
+                { package_type: "container", package_name: pkg, username: context.repo.owner, per_page: 100 }
+              );
+              const match = versions.find(v => (v.metadata?.container?.tags || []).includes(tag));
+              if (!match) { core.info(`No GHCR version found with tag ${tag}; nothing to delete.`); return; }
+              await github.rest.packages.deletePackageVersionForUser({
+                package_type: "container", package_name: pkg, username: context.repo.owner, package_version_id: match.id,
+              });
+              core.info(`Deleted GHCR version ${match.id} (tag ${tag}).`);
+            } catch (e) {
+              core.warning(`Could not delete preview image tag ${tag}: ${e.message}`);
+            }
+
+      - name: Get app token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
+      - name: Comment teardown
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number("${{ inputs.pr-number }}"),
+              body: "Preview environment torn down (release `${{ needs.meta.outputs.release_name }}`).",
+            });

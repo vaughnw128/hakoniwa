@@ -1,0 +1,104 @@
+name: Preview Metadata
+
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: "Pull request number."
+        type: string
+        required: true
+      head-sha:
+        description: "Head SHA of the PR branch."
+        type: string
+        required: true
+      image-repo:
+        description: "Container image repository. Defaults to ghcr.io/<owner>/<repo>."
+        type: string
+        default: ""
+      image-tag-prefix:
+        description: "Prefix for preview image tags."
+        type: string
+        default: "pr"
+      chart-name:
+        description: "Helm chart name. Defaults to repository name."
+        type: string
+        default: ""
+      chart-registry:
+        description: "OCI registry for preview Helm charts. Defaults to oci://ghcr.io/<owner>/charts."
+        type: string
+        default: ""
+    outputs:
+      image:
+        description: "Full image reference (repo:tag) for this preview."
+        value: ${{ jobs.meta.outputs.image }}
+      image_repo:
+        description: "Resolved image repository."
+        value: ${{ jobs.meta.outputs.image_repo }}
+      image_tag:
+        description: "Resolved image tag for this preview."
+        value: ${{ jobs.meta.outputs.image_tag }}
+      image_tag_floating:
+        description: "Floating PR-scoped tag (no SHA suffix)."
+        value: ${{ jobs.meta.outputs.image_tag_floating }}
+      chart_name:
+        description: "Resolved Helm chart name."
+        value: ${{ jobs.meta.outputs.chart_name }}
+      chart_registry:
+        description: "Resolved OCI registry for preview charts."
+        value: ${{ jobs.meta.outputs.chart_registry }}
+      chart_version:
+        description: "Preview chart version (0.0.0-pr.<n>.<run>)."
+        value: ${{ jobs.meta.outputs.chart_version }}
+      release_name:
+        description: "Deterministic Helm release name."
+        value: ${{ jobs.meta.outputs.release_name }}
+
+permissions: {}
+
+jobs:
+  meta:
+    name: Compute Preview Metadata
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.compute.outputs.image }}
+      image_repo: ${{ steps.compute.outputs.image_repo }}
+      image_tag: ${{ steps.compute.outputs.image_tag }}
+      image_tag_floating: ${{ steps.compute.outputs.image_tag_floating }}
+      chart_name: ${{ steps.compute.outputs.chart_name }}
+      chart_registry: ${{ steps.compute.outputs.chart_registry }}
+      chart_version: ${{ steps.compute.outputs.chart_version }}
+      release_name: ${{ steps.compute.outputs.release_name }}
+    steps:
+      - id: compute
+        shell: bash
+        run: |
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          pr="${{ inputs.pr-number }}"
+          sha="${{ inputs.head-sha }}"
+          short_sha="${sha:0:7}"
+
+          image_repo="${{ inputs.image-repo }}"
+          [ -z "$image_repo" ] && image_repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+
+          chart_name="${{ inputs.chart-name }}"
+          [ -z "$chart_name" ] && chart_name="$repo_name"
+
+          chart_registry="${{ inputs.chart-registry }}"
+          [ -z "$chart_registry" ] && chart_registry="oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
+
+          prefix="${{ inputs.image-tag-prefix }}"
+          image_tag="${prefix}-${pr}-${short_sha}"
+          image_tag_floating="${prefix}-${pr}"
+          chart_version="0.0.0-pr.${pr}.${GITHUB_RUN_NUMBER}"
+          release_name="pr-${pr}-${chart_name}"
+
+          {
+            echo "image=${image_repo}:${image_tag}"
+            echo "image_repo=${image_repo}"
+            echo "image_tag=${image_tag}"
+            echo "image_tag_floating=${image_tag_floating}"
+            echo "chart_name=${chart_name}"
+            echo "chart_registry=${chart_registry}"
+            echo "chart_version=${chart_version}"
+            echo "release_name=${release_name}"
+          } >> "$GITHUB_OUTPUT"
