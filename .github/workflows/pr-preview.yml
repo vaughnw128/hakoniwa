@@ -148,7 +148,7 @@ jobs:
   chart:
     name: Package Preview Chart
     needs: [prepare, container]
-    if: ${{ needs.container.result == 'success' && inputs.helm-path != '' }}
+    if: ${{ always() && needs.container.result == 'success' && inputs.helm-path != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
