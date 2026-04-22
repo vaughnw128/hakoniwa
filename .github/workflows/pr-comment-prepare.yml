@@ -1,0 +1,97 @@
+name: PR Comment Prepare
+
+on:
+  workflow_call:
+    inputs:
+      issue-number:
+        description: "Issue or pull request number from the comment event"
+        type: string
+        required: true
+      comment-body:
+        description: "Raw comment body"
+        type: string
+        default: ""
+      comment-author-association:
+        description: "GitHub author association for the comment author"
+        type: string
+        default: ""
+      command-prefix:
+        description: "Comment prefix that should trigger the downstream workflow"
+        type: string
+        required: true
+      allow-forks:
+        description: "Whether to allow PRs from forks"
+        type: boolean
+        default: false
+    outputs:
+      should-run:
+        description: "Whether the comment matched and the PR is eligible"
+        value: ${{ jobs.prepare.outputs.should_run }}
+      head-sha:
+        description: "Head SHA for the PR branch"
+        value: ${{ jobs.prepare.outputs.head_sha }}
+      pr-number:
+        description: "Normalized PR number"
+        value: ${{ jobs.prepare.outputs.pr_number }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  prepare:
+    name: Prepare PR Context
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.prepare.outputs.should_run }}
+      head_sha: ${{ steps.prepare.outputs.head_sha }}
+      pr_number: ${{ steps.prepare.outputs.pr_number }}
+    steps:
+      - name: Resolve PR context
+        id: prepare
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issueNumber = Number("${{ inputs.issue-number }}");
+            const commentBody = `${{ inputs.comment-body }}`.trim();
+            const association = `${{ inputs.comment-author-association }}`;
+            const commandPrefix = `${{ inputs.command-prefix }}`;
+            const allowForks = `${{ inputs.allow-forks }}` === "true";
+            const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
+            core.setOutput("should_run", "false");
+            core.setOutput("head_sha", "");
+            core.setOutput("pr_number", `${issueNumber}`);
+
+            if (!commentBody.startsWith(commandPrefix)) {
+              core.info(`Comment does not start with '${commandPrefix}', skipping.`);
+              return;
+            }
+
+            if (!trustedAssociations.has(association)) {
+              core.info(`Comment author association '${association}' is not allowed, skipping.`);
+              return;
+            }
+
+            let pr;
+            try {
+              const response = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: issueNumber,
+              });
+              pr = response.data;
+            } catch (error) {
+              core.info(`Issue #${issueNumber} is not a pull request or could not be loaded, skipping.`);
+              return;
+            }
+
+            if (!allowForks && pr.head.repo.full_name !== `${owner}/${repo}`) {
+              core.info("Fork PR detected and allow-forks is false, skipping.");
+              return;
+            }
+
+            core.setOutput("should_run", "true");
+            core.setOutput("head_sha", pr.head.sha);
+            core.setOutput("pr_number", `${pr.number}`);
