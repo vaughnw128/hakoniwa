@@ -24,13 +24,13 @@ on:
         type: boolean
         default: false
     outputs:
-      should-run:
+      should_run:
         description: "Whether the comment matched and the PR is eligible"
         value: ${{ jobs.prepare.outputs.should_run }}
-      head-sha:
+      head_sha:
         description: "Head SHA for the PR branch"
         value: ${{ jobs.prepare.outputs.head_sha }}
-      pr-number:
+      pr_number:
         description: "Normalized PR number"
         value: ${{ jobs.prepare.outputs.pr_number }}
 

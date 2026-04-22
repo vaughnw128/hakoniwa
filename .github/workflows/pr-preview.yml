@@ -149,8 +149,31 @@ jobs:
       ref: ${{ inputs.head-sha }}
       target: aarch64-unknown-linux-gnu
 
+  announce:
+    name: Announce Preview Start
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment start
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const prNumber = Number("${{ inputs.pr-number }}");
+            const image = "${{ needs.prepare.outputs.image }}";
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: [
+                "Preview build started.",
+                "",
+                `- Target image: \`${image}\``,
+                `- Commit: \`${"${{ inputs.head-sha }}".slice(0, 7)}\``,
+              ].join("\n"),
+            });
+
   image:
-    needs: [prepare, build-amd64, build-arm64]
+    needs: [prepare, build-amd64, build-arm64, announce]
     if: ${{ always() && needs.prepare.result == 'success' && (inputs.language != 'rust' || (needs.build-amd64.result == 'success' && needs.build-arm64.result == 'success')) }}
     uses: vaughnw128/hakoniwa/.github/workflows/container-build.yml@main
     with:
@@ -245,4 +268,45 @@ jobs:
               repo: context.repo.repo,
               issue_number: prNumber,
               body: lines.join("\n"),
+            });
+
+  notify_failure:
+    name: Comment Preview Failure
+    needs: [prepare, build-amd64, build-arm64, announce, image, preview]
+    if: ${{ always() && (needs.prepare.result == 'failure' || needs.build-amd64.result == 'failure' || needs.build-arm64.result == 'failure' || needs.announce.result == 'failure' || needs.image.result == 'failure' || needs.preview.result == 'failure') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment failure
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const prNumber = Number("${{ inputs.pr-number }}");
+            const failedJobs = [];
+            const jobResults = {
+              prepare: "${{ needs.prepare.result }}",
+              build_amd64: "${{ needs.build-amd64.result }}",
+              build_arm64: "${{ needs.build-arm64.result }}",
+              announce: "${{ needs.announce.result }}",
+              image: "${{ needs.image.result }}",
+              preview: "${{ needs.preview.result }}",
+            };
+
+            for (const [name, result] of Object.entries(jobResults)) {
+              if (result === "failure") failedJobs.push(name);
+            }
+
+            const body = [
+              "Preview build failed.",
+              "",
+              failedJobs.length ? `- Failed jobs: \`${failedJobs.join(", ")}\`` : "- A preview job failed before completion.",
+              `- Commit: \`${"${{ inputs.head-sha }}".slice(0, 7)}\``,
+              "",
+              `- Run: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            ].join("\n");
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body,
             });
