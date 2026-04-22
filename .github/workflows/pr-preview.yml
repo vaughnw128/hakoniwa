@@ -1,0 +1,248 @@
+name: PR Preview Build
+
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: "Pull request number for the preview build"
+        type: string
+        required: true
+      head-sha:
+        description: "Head SHA of the PR branch to build"
+        type: string
+        required: true
+      language:
+        description: "Primary language for the preview build: rust, python, go, or none"
+        type: string
+        default: "none"
+      binary-name:
+        description: "Name of the Rust binary to build when language=rust"
+        type: string
+        default: ""
+      dockerfile:
+        description: "Path to Dockerfile"
+        type: string
+        default: "./Dockerfile"
+      build-context:
+        description: "Docker build context path"
+        type: string
+        default: "."
+      build-args:
+        description: "Additional Docker build-args"
+        type: string
+        default: ""
+      platforms:
+        description: "Docker platforms to build for (comma-separated)"
+        type: string
+        default: "linux/amd64,linux/arm64"
+      helm-path:
+        description: "Path to the Helm chart directory (empty to skip chart packaging)"
+        type: string
+        default: ""
+      chart-name:
+        description: "Helm chart package name (defaults to repository name)"
+        type: string
+        default: ""
+      chart-registry:
+        description: "OCI registry for preview Helm charts"
+        type: string
+        default: ""
+      helm-image-repository-key:
+        description: "yq path for the image repository field in values.yaml"
+        type: string
+        default: "single-container.image"
+      helm-image-tag-key:
+        description: "yq path for the image tag field in values.yaml"
+        type: string
+        default: "single-container.imageTag"
+      image-repo:
+        description: "Container image repository (defaults to ghcr.io/<owner>/<repo>)"
+        type: string
+        default: ""
+      image-tag-prefix:
+        description: "Prefix for preview image tags"
+        type: string
+        default: "pr"
+      retention-days:
+        description: "Retention days for uploaded chart artifacts"
+        type: number
+        default: 7
+    outputs:
+      image:
+        description: "Preview image reference"
+        value: ${{ jobs.prepare.outputs.image }}
+      chart-version:
+        description: "Preview chart version"
+        value: ${{ jobs.prepare.outputs.chart_version }}
+
+permissions:
+  contents: read
+  issues: write
+  packages: write
+  pull-requests: read
+
+jobs:
+  prepare:
+    name: Prepare Preview Metadata
+    runs-on: ubuntu-latest
+    outputs:
+      chart_name: ${{ steps.meta.outputs.chart_name }}
+      chart_registry: ${{ steps.meta.outputs.chart_registry }}
+      chart_version: ${{ steps.meta.outputs.chart_version }}
+      image: ${{ steps.meta.outputs.image }}
+      image_repo: ${{ steps.meta.outputs.image_repo }}
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - name: Validate inputs
+        shell: bash
+        run: |
+          if [ "${{ inputs.language }}" = "rust" ] && [ -z "${{ inputs.binary-name }}" ]; then
+            echo "::error::binary-name is required when language=rust"
+            exit 1
+          fi
+
+      - name: Compute preview metadata
+        id: meta
+        shell: bash
+        run: |
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          pr_number="${{ inputs.pr-number }}"
+          short_sha="${{ inputs.head-sha }}"
+          short_sha="${short_sha:0:7}"
+          image_repo="${{ inputs.image-repo }}"
+          if [ -z "$image_repo" ]; then
+            image_repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          fi
+          image_tag="${{ inputs.image-tag-prefix }}-${pr_number}-${short_sha}"
+          chart_name="${{ inputs.chart-name }}"
+          if [ -z "$chart_name" ]; then
+            chart_name="$repo_name"
+          fi
+          chart_registry="${{ inputs.chart-registry }}"
+          if [ -z "$chart_registry" ]; then
+            chart_registry="oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
+          fi
+          chart_version="0.0.0-pr.${pr_number}.${GITHUB_RUN_NUMBER}"
+
+          echo "chart_name=$chart_name" >> "$GITHUB_OUTPUT"
+          echo "chart_registry=$chart_registry" >> "$GITHUB_OUTPUT"
+          echo "chart_version=$chart_version" >> "$GITHUB_OUTPUT"
+          echo "image=$image_repo:$image_tag" >> "$GITHUB_OUTPUT"
+          echo "image_repo=$image_repo" >> "$GITHUB_OUTPUT"
+          echo "image_tag=$image_tag" >> "$GITHUB_OUTPUT"
+
+  build-amd64:
+    if: ${{ inputs.language == 'rust' }}
+    needs: prepare
+    uses: vaughnw128/hakoniwa/.github/workflows/build-rust-binary.yml@main
+    with:
+      binary-name: ${{ inputs.binary-name }}
+      ref: ${{ inputs.head-sha }}
+      target: x86_64-unknown-linux-gnu
+
+  build-arm64:
+    if: ${{ inputs.language == 'rust' }}
+    needs: prepare
+    uses: vaughnw128/hakoniwa/.github/workflows/build-rust-binary.yml@main
+    with:
+      binary-name: ${{ inputs.binary-name }}
+      ref: ${{ inputs.head-sha }}
+      target: aarch64-unknown-linux-gnu
+
+  image:
+    needs: [prepare, build-amd64, build-arm64]
+    if: ${{ always() && needs.prepare.result == 'success' && (inputs.language != 'rust' || (needs.build-amd64.result == 'success' && needs.build-arm64.result == 'success')) }}
+    uses: vaughnw128/hakoniwa/.github/workflows/container-build.yml@main
+    with:
+      ref: ${{ inputs.head-sha }}
+      dockerfile: ${{ inputs.dockerfile }}
+      build-context: ${{ inputs.build-context }}
+      platforms: ${{ inputs.platforms }}
+      push: true
+      tags: |
+        ${{ needs.prepare.outputs.image }}
+        ${{ needs.prepare.outputs.image_repo }}:${{ inputs.image-tag-prefix }}-${{ inputs.pr-number }}
+      build-args: |
+        ${{ inputs.language == 'rust' && format('BINARY_NAME={0}', inputs.binary-name) || '' }}
+        ${{ inputs.build-args }}
+      artifact-amd64-name: ${{ inputs.language == 'rust' && format('{0}-x86_64-unknown-linux-gnu', inputs.binary-name) || '' }}
+      artifact-arm64-name: ${{ inputs.language == 'rust' && format('{0}-aarch64-unknown-linux-gnu', inputs.binary-name) || '' }}
+      executable-paths: |
+        ${{ inputs.language == 'rust' && format('dist/linux/amd64/{0}', inputs.binary-name) || '' }}
+        ${{ inputs.language == 'rust' && format('dist/linux/arm64/{0}', inputs.binary-name) || '' }}
+    secrets: inherit
+
+  preview:
+    name: Publish Preview Artifacts
+    needs: [prepare, image]
+    if: ${{ needs.image.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.head-sha }}
+
+      - name: Set up Helm
+        if: ${{ inputs.helm-path != '' }}
+        uses: azure/setup-helm@v5
+
+      - name: Update chart metadata for preview
+        if: ${{ inputs.helm-path != '' }}
+        uses: mikefarah/yq@v4.45.4
+        with:
+          cmd: |
+            yq -i '.version = "${{ needs.prepare.outputs.chart_version }}"' ${{ inputs.helm-path }}/Chart.yaml
+            yq -i '.appVersion = "${{ needs.prepare.outputs.image_tag }}"' ${{ inputs.helm-path }}/Chart.yaml
+            yq -i '.${{ inputs.helm-image-repository-key }} = "${{ needs.prepare.outputs.image_repo }}"' ${{ inputs.helm-path }}/values.yaml
+            yq -i '.${{ inputs.helm-image-tag-key }} = "${{ needs.prepare.outputs.image_tag }}"' ${{ inputs.helm-path }}/values.yaml
+
+      - name: Package Helm chart
+        if: ${{ inputs.helm-path != '' }}
+        shell: bash
+        run: |
+          helm dependency build "${{ inputs.helm-path }}"
+          helm package "${{ inputs.helm-path }}" \
+            --version "${{ needs.prepare.outputs.chart_version }}" \
+            --app-version "${{ needs.prepare.outputs.image_tag }}"
+
+      - name: Push preview Helm chart
+        if: ${{ inputs.helm-path != '' }}
+        shell: bash
+        run: helm push "./${{ needs.prepare.outputs.chart_name }}-${{ needs.prepare.outputs.chart_version }}.tgz" "${{ needs.prepare.outputs.chart_registry }}"
+
+      - name: Upload preview chart artifact
+        if: ${{ inputs.helm-path != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.chart_name }}-preview-chart-${{ inputs.pr-number }}
+          path: ./${{ needs.prepare.outputs.chart_name }}-${{ needs.prepare.outputs.chart_version }}.tgz
+          retention-days: ${{ inputs.retention-days }}
+
+      - name: Comment preview details
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const prNumber = Number("${{ inputs.pr-number }}");
+            const image = "${{ needs.prepare.outputs.image }}";
+            const chartVersion = "${{ needs.prepare.outputs.chart_version }}";
+            const lines = [
+              "Preview build is ready.",
+              "",
+              `- Image: \`${image}\``,
+            ];
+
+            if ("${{ inputs.helm-path }}" !== "") {
+              lines.push(`- Chart: \`${{ needs.prepare.outputs.chart_registry }}/${{ needs.prepare.outputs.chart_name }}\``);
+              lines.push(`- Chart version: \`${chartVersion}\``);
+              lines.push("");
+              lines.push("Example:");
+              lines.push(`\`helm upgrade --install ${{ needs.prepare.outputs.chart_name }}-preview ${{ needs.prepare.outputs.chart_registry }}/${{ needs.prepare.outputs.chart_name }} --version ${chartVersion}\``);
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: lines.join("\n"),
+            });
