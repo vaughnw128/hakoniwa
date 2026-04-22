@@ -79,7 +79,7 @@ permissions:
   contents: read
   issues: write
   packages: write
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   prepare:
@@ -154,9 +154,17 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     steps:
+      - name: Get app token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
       - name: Comment start
         uses: actions/github-script@v8
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const prNumber = Number("${{ inputs.pr-number }}");
             const image = "${{ needs.prepare.outputs.image }}";
@@ -242,9 +250,17 @@ jobs:
           path: ./${{ needs.prepare.outputs.chart_name }}-${{ needs.prepare.outputs.chart_version }}.tgz
           retention-days: ${{ inputs.retention-days }}
 
+      - name: Get app token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
       - name: Comment preview details
         uses: actions/github-script@v8
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const prNumber = Number("${{ inputs.pr-number }}");
             const image = "${{ needs.prepare.outputs.image }}";
@@ -276,9 +292,17 @@ jobs:
     if: ${{ always() && (needs.prepare.result == 'failure' || needs.build-amd64.result == 'failure' || needs.build-arm64.result == 'failure' || needs.announce.result == 'failure' || needs.image.result == 'failure' || needs.preview.result == 'failure') }}
     runs-on: ubuntu-latest
     steps:
+      - name: Get app token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
       - name: Comment failure
         uses: actions/github-script@v8
         with:
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const prNumber = Number("${{ inputs.pr-number }}");
             const failedJobs = [];
