@@ -67,6 +67,12 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ inputs.python-version }}
+          enable-cache: true
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+            **/*.py.lock
+          cache-suffix: quality
 
       - name: Ruff format check
         if: inputs.language == 'python'
@@ -85,6 +91,12 @@ jobs:
           toolchain: ${{ inputs.rust-toolchain }}
           components: rustfmt, clippy
 
+      - name: Cache Rust dependencies
+        if: inputs.language == 'rust'
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: verify-quality-${{ inputs.rust-toolchain }}
+
       - name: Rust format check
         if: inputs.language == 'rust'
         run: cargo fmt --check
@@ -98,6 +110,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ inputs.go-version }}
+          cache: true
 
       - name: Go vet
         if: inputs.language == 'go'
@@ -150,6 +163,8 @@ jobs:
           file: ${{ inputs.dockerfile }}
           push: false
           platforms: linux/amd64
+          cache-from: type=gha,scope=${{ github.repository }}-verify
+          cache-to: type=gha,mode=max,scope=${{ github.repository }}-verify,ignore-error=true
           build-args: |
             ${{ inputs.language == 'rust' && inputs.binary-name != '' && format('BINARY_NAME={0}', inputs.binary-name) || '' }}
             ${{ inputs.build-args }}
@@ -168,6 +183,12 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ inputs.python-version }}
+          enable-cache: true
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+            **/*.py.lock
+          cache-suffix: tests
 
       - name: Sync Python dependencies
         if: inputs.language == 'python'
@@ -188,6 +209,12 @@ jobs:
         with:
           toolchain: ${{ inputs.rust-toolchain }}
 
+      - name: Cache Rust dependencies
+        if: inputs.language == 'rust'
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: verify-tests-${{ inputs.rust-toolchain }}
+
       - name: Cargo test
         if: inputs.language == 'rust'
         run: cargo test
@@ -197,6 +224,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ inputs.go-version }}
+          cache: true
 
       - name: Go test
         if: inputs.language == 'go'

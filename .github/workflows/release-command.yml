@@ -43,6 +43,10 @@ on:
         description: "Docker platforms."
         type: string
         default: "linux/amd64,linux/arm64"
+      cache-ref:
+        description: "BuildKit registry cache reference for release candidate images."
+        type: string
+        default: ""
       helm-path:
         description: "Path to Helm chart directory (empty to skip chart release)."
         type: string
@@ -283,6 +287,7 @@ jobs:
       build-context: ${{ inputs.build-context }}
       build-args: ${{ inputs.build-args }}
       platforms: ${{ inputs.platforms }}
+      cache-ref: ${{ inputs.cache-ref }}
       helm-path: ""
       require-verify: false
     secrets: inherit

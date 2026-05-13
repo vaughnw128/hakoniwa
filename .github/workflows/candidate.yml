@@ -43,6 +43,10 @@ on:
         description: "Container image repository. Defaults to ghcr.io/<owner>/<repo>."
         type: string
         default: ""
+      cache-ref:
+        description: "BuildKit registry cache reference. Defaults to ghcr.io/<owner>/<repo>:buildcache."
+        type: string
+        default: ""
       helm-path:
         description: "Path to Helm chart directory (empty to skip preview chart)."
         type: string
@@ -210,6 +214,7 @@ jobs:
       build-context: ${{ inputs.build-context }}
       platforms: ${{ inputs.platforms }}
       push: true
+      cache-ref: ${{ inputs.cache-ref }}
       tags: |
         ${{ needs.meta.outputs.image }}
         ${{ needs.meta.outputs.floating_image }}

@@ -35,6 +35,10 @@ on:
         description: "Docker platforms."
         type: string
         default: "linux/amd64,linux/arm64"
+      cache-ref:
+        description: "BuildKit registry cache reference for candidate images."
+        type: string
+        default: ""
       skip-docker:
         description: "Skip candidate image build/promotion."
         type: boolean
@@ -121,6 +125,7 @@ jobs:
       build-context: ${{ inputs.build-context }}
       build-args: ${{ inputs.build-args }}
       platforms: ${{ inputs.platforms }}
+      cache-ref: ${{ inputs.cache-ref }}
       helm-path: ""
       require-verify: false
     secrets: inherit

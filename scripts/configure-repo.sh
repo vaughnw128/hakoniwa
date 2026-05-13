@@ -14,7 +14,8 @@ Options:
   --binary-name NAME      Rust binary name.
   --helm-path PATH        Consumer chart path, for example ./helm.
   --chart-name NAME       Helm chart package name.
-  --workflow-ref REF      Hakoniwa ref to use. Default: v1.
+  --cache-ref REF         BuildKit registry cache ref for image builds.
+  --workflow-ref REF      Hakoniwa ref to use. Default: main.
   --preview-command TEXT  Preview command. Default: euclid build.
   --release-command TEXT  Release command prefix. Default: euclid release.
   --merge-method METHOD   merge, squash, or rebase. Default: squash.
@@ -32,7 +33,8 @@ language="none"
 binary_name=""
 helm_path=""
 chart_name=""
-workflow_ref="v1"
+cache_ref=""
+workflow_ref="main"
 preview_command="euclid build"
 release_command="euclid release"
 merge_method="squash"
@@ -49,6 +51,7 @@ while [[ $# -gt 0 ]]; do
     --binary-name) binary_name="${2:?missing value for --binary-name}"; shift 2 ;;
     --helm-path) helm_path="${2:?missing value for --helm-path}"; shift 2 ;;
     --chart-name) chart_name="${2:?missing value for --chart-name}"; shift 2 ;;
+    --cache-ref) cache_ref="${2:?missing value for --cache-ref}"; shift 2 ;;
     --workflow-ref) workflow_ref="${2:?missing value for --workflow-ref}"; shift 2 ;;
     --preview-command) preview_command="${2:?missing value for --preview-command}"; shift 2 ;;
     --release-command) release_command="${2:?missing value for --release-command}"; shift 2 ;;
@@ -89,7 +92,7 @@ yaml_line() {
   local value="$2"
   local indent="${3:-6}"
   [[ -n "$value" ]] || return 0
-  printf '%*s%s: %s\n' "$indent" "" "$name" "$value"
+  printf '\n%*s%s: %s' "$indent" "" "$name" "$value"
 }
 
 write_workflow() {
@@ -109,6 +112,7 @@ write_workflow() {
 binary_line="$(yaml_line "binary-name" "$binary_name")"
 helm_line="$(yaml_line "helm-path" "$helm_path")"
 chart_line="$(yaml_line "chart-name" "$chart_name")"
+cache_line="$(yaml_line "cache-ref" "$cache_ref")"
 
 verify=$(cat <<EOF
 name: Verify
@@ -123,7 +127,8 @@ jobs:
     uses: $hakoniwa/verify.yml@$workflow_ref
     with:
       language: $language
-$binary_line$helm_line    secrets: inherit
+$binary_line$helm_line
+    secrets: inherit
 EOF
 )
 write_workflow "$workflow_dir/verify.yml" "$verify"
@@ -212,7 +217,9 @@ jobs:
       candidate-kind: pr
       candidate-id: \${{ needs.prepare.outputs.pr_number }}
       language: $language
-$binary_line$helm_line$chart_line    secrets: inherit
+$binary_line$helm_line$chart_line
+$cache_line
+    secrets: inherit
 EOF
 )
   write_workflow "$workflow_dir/pr-candidate.yml" "$preview"
@@ -248,7 +255,9 @@ jobs:
       comment-author-association: \${{ github.event.comment.author_association || '' }}
       command-prefix: $release_command
       language: $language
-$binary_line$helm_line$chart_line      merge-method: $merge_method
+$binary_line$helm_line$chart_line
+$cache_line
+      merge-method: $merge_method
       require-approval: true
     secrets: inherit
 EOF
