@@ -16,6 +16,7 @@ Options:
   --helm-path PATH        Consumer chart path, for example ./helm.
   --chart-name NAME       Helm chart package name.
   --cache-ref REF         BuildKit registry cache ref for image builds.
+  --platforms LIST        Docker platforms. Default: linux/amd64,linux/arm64.
   --workflow-ref REF      Hakoniwa ref to use. Default: main.
   --preview-command TEXT  Preview command. Default: euclid build.
   --release-command TEXT  Release command prefix. Default: euclid release.
@@ -37,6 +38,7 @@ binary_name=""
 helm_path=""
 chart_name=""
 cache_ref=""
+platforms="linux/amd64,linux/arm64"
 workflow_ref="main"
 preview_command="euclid build"
 release_command="euclid release"
@@ -57,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     --helm-path) helm_path="${2:?missing value for --helm-path}"; shift 2 ;;
     --chart-name) chart_name="${2:?missing value for --chart-name}"; shift 2 ;;
     --cache-ref) cache_ref="${2:?missing value for --cache-ref}"; shift 2 ;;
+    --platforms) platforms="${2:?missing value for --platforms}"; shift 2 ;;
     --workflow-ref) workflow_ref="${2:?missing value for --workflow-ref}"; shift 2 ;;
     --preview-command) preview_command="${2:?missing value for --preview-command}"; shift 2 ;;
     --release-command) release_command="${2:?missing value for --release-command}"; shift 2 ;;
@@ -120,6 +123,7 @@ binary_line="$(yaml_line "binary-name" "$binary_name")"
 helm_line="$(yaml_line "helm-path" "$helm_path")"
 chart_line="$(yaml_line "chart-name" "$chart_name")"
 cache_line="$(yaml_line "cache-ref" "$cache_ref")"
+platforms_line="$(yaml_line "platforms" "$platforms")"
 case "$language" in
   python) codeql_languages='["python"]' ;;
   go) codeql_languages='["go"]' ;;
@@ -133,6 +137,10 @@ on:
   pull_request:
   push:
     branches: [main]
+
+permissions:
+  contents: read
+  packages: read
 
 jobs:
   verify:
@@ -152,6 +160,9 @@ name: Verify PR
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
 
 jobs:
   verify-pr:
@@ -177,11 +188,13 @@ on:
 
 permissions:
   contents: read
-  security-events: write
-  actions: read
 
 jobs:
   scan:
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
     uses: $hakoniwa/code-scanning.yml@$workflow_ref
     with:
       language: $language
@@ -202,11 +215,13 @@ on:
 
 permissions:
   contents: read
-  issues: write
-  pull-requests: read
 
 jobs:
   help:
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
     uses: $hakoniwa/pr-help.yml@$workflow_ref
     with:
       pr-number: \${{ github.event.pull_request.number }}
@@ -232,15 +247,14 @@ concurrency:
 
 permissions:
   contents: read
-  checks: read
-  issues: write
-  packages: write
-  pull-requests: read
-  security-events: write
 
 jobs:
   prepare:
     if: \${{ github.event.issue.pull_request }}
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
     uses: $hakoniwa/pr-comment-prepare.yml@$workflow_ref
     with:
       issue-number: \${{ github.event.issue.number }}
@@ -253,6 +267,11 @@ jobs:
   candidate:
     needs: prepare
     if: \${{ needs.prepare.outputs.should_run == 'true' }}
+    permissions:
+      contents: read
+      checks: read
+      packages: write
+      security-events: write
     uses: $hakoniwa/candidate.yml@$workflow_ref
     with:
       ref: \${{ needs.prepare.outputs.head_sha }}
@@ -260,6 +279,7 @@ jobs:
       candidate-id: \${{ needs.prepare.outputs.pr_number }}
       language: $language
 $python_line$binary_line$helm_line$chart_line
+$platforms_line
 $cache_line
     secrets: inherit
 EOF
@@ -280,17 +300,19 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  packages: write
-  checks: read
-  actions: read
-  security-events: write
+  contents: read
 
 jobs:
   release:
     if: \${{ github.event.issue.pull_request }}
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      packages: write
+      checks: read
+      actions: read
+      security-events: write
     uses: $hakoniwa/release-command.yml@$workflow_ref
     with:
       issue-number: \${{ github.event.issue.number }}
@@ -299,6 +321,7 @@ jobs:
       command-prefix: $release_command
       language: $language
 $python_line$binary_line$helm_line$chart_line
+$platforms_line
 $cache_line
       merge-method: $merge_method
       require-approval: true

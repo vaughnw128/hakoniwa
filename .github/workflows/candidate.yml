@@ -193,6 +193,31 @@ jobs:
           echo "::error::binary-name is required when language=rust"
           exit 1
 
+      - name: Validate Rust platforms
+        if: inputs.language == 'rust'
+        shell: bash
+        run: |
+          IFS=',' read -ra platforms <<< "${{ inputs.platforms }}"
+          supported=0
+          for platform in "${platforms[@]}"; do
+            platform="${platform//[[:space:]]/}"
+            case "$platform" in
+              linux/amd64|linux/arm64)
+                supported=1
+                ;;
+              "")
+                ;;
+              *)
+                echo "::error::Rust candidate builds support linux/amd64 and linux/arm64, got '$platform'."
+                exit 1
+                ;;
+            esac
+          done
+          if [ "$supported" -ne 1 ]; then
+            echo "::error::At least one supported Rust platform is required."
+            exit 1
+          fi
+
   verify-gate:
     name: Verify Gate
     needs: validate
@@ -252,7 +277,7 @@ jobs:
 
   build-rust-amd64:
     needs: [validate, verify-gate, verify]
-    if: ${{ always() && inputs.language == 'rust' && needs.validate.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
+    if: ${{ always() && inputs.language == 'rust' && contains(inputs.platforms, 'linux/amd64') && needs.validate.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
     uses: vaughnw128/hakoniwa/.github/workflows/build-rust-binary.yml@main
     with:
       binary-name: ${{ inputs.binary-name }}
@@ -261,7 +286,7 @@ jobs:
 
   build-rust-arm64:
     needs: [validate, verify-gate, verify]
-    if: ${{ always() && inputs.language == 'rust' && needs.validate.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
+    if: ${{ always() && inputs.language == 'rust' && contains(inputs.platforms, 'linux/arm64') && needs.validate.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
     uses: vaughnw128/hakoniwa/.github/workflows/build-rust-binary.yml@main
     with:
       binary-name: ${{ inputs.binary-name }}
@@ -271,7 +296,7 @@ jobs:
   container:
     name: Build Candidate Image
     needs: [meta, validate, verify-gate, verify, build-rust-amd64, build-rust-arm64]
-    if: ${{ always() && needs.meta.result == 'success' && needs.validate.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') && (inputs.language != 'rust' || (needs.build-rust-amd64.result == 'success' && needs.build-rust-arm64.result == 'success')) }}
+    if: ${{ always() && needs.meta.result == 'success' && needs.validate.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') && (inputs.language != 'rust' || ((!contains(inputs.platforms, 'linux/amd64') || needs.build-rust-amd64.result == 'success') && (!contains(inputs.platforms, 'linux/arm64') || needs.build-rust-arm64.result == 'success'))) }}
     uses: vaughnw128/hakoniwa/.github/workflows/container-build.yml@main
     with:
       ref: ${{ inputs.ref }}
@@ -287,11 +312,11 @@ jobs:
         git_sha=${{ inputs.ref }}
         ${{ inputs.language == 'rust' && format('BINARY_NAME={0}', inputs.binary-name) || '' }}
         ${{ inputs.build-args }}
-      artifact-amd64-name: ${{ inputs.language == 'rust' && format('{0}-x86_64-unknown-linux-gnu', inputs.binary-name) || '' }}
-      artifact-arm64-name: ${{ inputs.language == 'rust' && format('{0}-aarch64-unknown-linux-gnu', inputs.binary-name) || '' }}
+      artifact-amd64-name: ${{ inputs.language == 'rust' && contains(inputs.platforms, 'linux/amd64') && format('{0}-x86_64-unknown-linux-gnu', inputs.binary-name) || '' }}
+      artifact-arm64-name: ${{ inputs.language == 'rust' && contains(inputs.platforms, 'linux/arm64') && format('{0}-aarch64-unknown-linux-gnu', inputs.binary-name) || '' }}
       executable-paths: |
-        ${{ inputs.language == 'rust' && format('dist/linux/amd64/{0}', inputs.binary-name) || '' }}
-        ${{ inputs.language == 'rust' && format('dist/linux/arm64/{0}', inputs.binary-name) || '' }}
+        ${{ inputs.language == 'rust' && contains(inputs.platforms, 'linux/amd64') && format('dist/linux/amd64/{0}', inputs.binary-name) || '' }}
+        ${{ inputs.language == 'rust' && contains(inputs.platforms, 'linux/arm64') && format('dist/linux/arm64/{0}', inputs.binary-name) || '' }}
     secrets: inherit
 
   image-scan:
