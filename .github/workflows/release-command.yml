@@ -23,6 +23,10 @@ on:
         description: "Primary language: python, rust, go, or none."
         type: string
         default: "none"
+      python-version:
+        description: "Python version (only used when language=python). Empty lets uv resolve from .python-version or project.requires-python."
+        type: string
+        default: ""
       binary-name:
         description: "Rust binary name (required when language=rust)."
         type: string
@@ -260,8 +264,8 @@ jobs:
             core.setOutput("merged_sha", merge.data.sha);
 
   verify:
-    needs: [parse, merge]
-    if: ${{ needs.parse.outputs.should_run == 'true' }}
+    needs: [parse, merge, verify-gate]
+    if: ${{ needs.parse.outputs.should_run == 'true' && needs.verify-gate.outputs.should_verify == 'true' }}
     uses: vaughnw128/hakoniwa/.github/workflows/verify.yml@main
     with:
       ref: ${{ needs.merge.outputs.merged_sha }}
@@ -270,18 +274,55 @@ jobs:
       dockerfile: ${{ inputs.dockerfile }}
       build-context: ${{ inputs.build-context }}
       build-args: ${{ inputs.build-args }}
+      python-version: ${{ inputs.python-version }}
       binary-name: ${{ inputs.binary-name }}
     secrets: inherit
 
-  candidate:
-    needs: [parse, merge, verify]
+  verify-gate:
+    name: Verify Gate
+    needs: [parse, merge]
     if: ${{ needs.parse.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      should_verify: ${{ steps.checks.outputs.should_verify }}
+      verified: ${{ steps.checks.outputs.verified }}
+    steps:
+      - id: checks
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const ref = "${{ needs.merge.outputs.merged_sha }}";
+            const checkRuns = await github.paginate(github.rest.checks.listForRef, {
+              owner,
+              repo,
+              ref,
+              per_page: 100,
+            });
+            const required = ["quality", "tests"];
+            const successful = new Set(
+              checkRuns
+                .filter(run => run.status === "completed" && run.conclusion === "success")
+                .flatMap(run => {
+                  const name = run.name.toLowerCase();
+                  return required.filter(requiredName => name.includes(requiredName));
+                })
+            );
+            const missing = required.filter(requiredName => !successful.has(requiredName));
+            core.info(`Found successful verify checks for ${ref}: ${[...successful].join(", ") || "none"}`);
+            core.setOutput("should_verify", missing.length ? "true" : "false");
+            core.setOutput("verified", missing.length ? "false" : "true");
+
+  candidate:
+    needs: [parse, merge, verify-gate, verify]
+    if: ${{ always() && needs.parse.outputs.should_run == 'true' && needs.merge.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
     uses: vaughnw128/hakoniwa/.github/workflows/candidate.yml@main
     with:
       ref: ${{ needs.merge.outputs.merged_sha }}
       candidate-kind: release-candidate
       candidate-id: ${{ needs.parse.outputs.version }}
       language: ${{ inputs.language }}
+      python-version: ${{ inputs.python-version }}
       binary-name: ${{ inputs.binary-name }}
       dockerfile: ${{ inputs.dockerfile }}
       build-context: ${{ inputs.build-context }}

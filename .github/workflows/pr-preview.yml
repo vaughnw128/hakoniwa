@@ -69,6 +69,7 @@ on:
 
 permissions:
   contents: read
+  checks: read
   issues: write
   packages: write
   pull-requests: write

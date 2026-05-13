@@ -11,6 +11,7 @@ Usage:
 Options:
   --repo PATH             Target repository path. Required.
   --language NAME         python, rust, go, or none. Default: none.
+  --python-version VER    Python version for CI. Default: auto from repo config.
   --binary-name NAME      Rust binary name.
   --helm-path PATH        Consumer chart path, for example ./helm.
   --chart-name NAME       Helm chart package name.
@@ -30,6 +31,7 @@ USAGE
 
 repo=""
 language="none"
+python_version=""
 binary_name=""
 helm_path=""
 chart_name=""
@@ -48,6 +50,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo) repo="${2:?missing value for --repo}"; shift 2 ;;
     --language) language="${2:?missing value for --language}"; shift 2 ;;
+    --python-version) python_version="${2:?missing value for --python-version}"; shift 2 ;;
     --binary-name) binary_name="${2:?missing value for --binary-name}"; shift 2 ;;
     --helm-path) helm_path="${2:?missing value for --helm-path}"; shift 2 ;;
     --chart-name) chart_name="${2:?missing value for --chart-name}"; shift 2 ;;
@@ -109,6 +112,7 @@ write_workflow() {
   echo "write $path"
 }
 
+python_line="$(yaml_line "python-version" "$python_version")"
 binary_line="$(yaml_line "binary-name" "$binary_name")"
 helm_line="$(yaml_line "helm-path" "$helm_path")"
 chart_line="$(yaml_line "chart-name" "$chart_name")"
@@ -127,7 +131,7 @@ jobs:
     uses: $hakoniwa/verify.yml@$workflow_ref
     with:
       language: $language
-$binary_line$helm_line
+$python_line$binary_line$helm_line
     secrets: inherit
 EOF
 )
@@ -192,6 +196,7 @@ concurrency:
 
 permissions:
   contents: read
+  checks: read
   issues: write
   packages: write
   pull-requests: read
@@ -217,7 +222,7 @@ jobs:
       candidate-kind: pr
       candidate-id: \${{ needs.prepare.outputs.pr_number }}
       language: $language
-$binary_line$helm_line$chart_line
+$python_line$binary_line$helm_line$chart_line
 $cache_line
     secrets: inherit
 EOF
@@ -255,7 +260,7 @@ jobs:
       comment-author-association: \${{ github.event.comment.author_association || '' }}
       command-prefix: $release_command
       language: $language
-$binary_line$helm_line$chart_line
+$python_line$binary_line$helm_line$chart_line
 $cache_line
       merge-method: $merge_method
       require-approval: true

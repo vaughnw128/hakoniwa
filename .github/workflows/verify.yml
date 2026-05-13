@@ -28,9 +28,9 @@ on:
         type: string
         default: ""
       python-version:
-        description: "Python version (only used when language=python)."
+        description: "Python version (only used when language=python). Empty lets uv resolve from .python-version or project.requires-python."
         type: string
-        default: "3.13"
+        default: ""
       rust-toolchain:
         description: "Rust toolchain (only used when language=rust)."
         type: string
@@ -63,7 +63,18 @@ jobs:
           ref: ${{ inputs.ref != '' && inputs.ref || github.sha }}
 
       - name: Install uv
-        if: inputs.language == 'python'
+        if: inputs.language == 'python' && inputs.python-version == ''
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+            **/*.py.lock
+          cache-suffix: quality
+
+      - name: Install uv with explicit Python
+        if: inputs.language == 'python' && inputs.python-version != ''
         uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ inputs.python-version }}
@@ -179,7 +190,18 @@ jobs:
           ref: ${{ inputs.ref != '' && inputs.ref || github.sha }}
 
       - name: Install uv
-        if: inputs.language == 'python'
+        if: inputs.language == 'python' && inputs.python-version == ''
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+            **/*.py.lock
+          cache-suffix: tests
+
+      - name: Install uv with explicit Python
+        if: inputs.language == 'python' && inputs.python-version != ''
         uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ inputs.python-version }}

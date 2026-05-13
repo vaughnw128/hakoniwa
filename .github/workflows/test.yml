@@ -28,9 +28,9 @@ on:
         type: string
         default: ""
       python-version:
-        description: "Python version (only used when language=python)."
+        description: "Python version (only used when language=python). Empty lets uv resolve from .python-version or project.requires-python."
         type: string
-        default: "3.13"
+        default: ""
       rust-toolchain:
         description: "Rust toolchain (only used when language=rust)."
         type: string
