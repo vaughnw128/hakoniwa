@@ -1,0 +1,367 @@
+name: Release Command
+
+on:
+  workflow_call:
+    inputs:
+      issue-number:
+        description: "Pull request number from the comment event."
+        type: string
+        required: true
+      comment-body:
+        description: "Raw comment body."
+        type: string
+        required: true
+      comment-author-association:
+        description: "GitHub author association for the comment author."
+        type: string
+        default: ""
+      command-prefix:
+        description: "Comment prefix used to request a release."
+        type: string
+        default: "euclid release"
+      language:
+        description: "Primary language: python, rust, go, or none."
+        type: string
+        default: "none"
+      binary-name:
+        description: "Rust binary name (required when language=rust)."
+        type: string
+        default: ""
+      dockerfile:
+        description: "Path to Dockerfile."
+        type: string
+        default: "./Dockerfile"
+      build-context:
+        description: "Docker build context."
+        type: string
+        default: "."
+      build-args:
+        description: "Extra Docker build-args."
+        type: string
+        default: ""
+      platforms:
+        description: "Docker platforms."
+        type: string
+        default: "linux/amd64,linux/arm64"
+      helm-path:
+        description: "Path to Helm chart directory (empty to skip chart release)."
+        type: string
+        default: ""
+      chart-name:
+        description: "Helm chart package name. Defaults to repository name."
+        type: string
+        default: ""
+      helm-registry:
+        description: "OCI registry for Helm charts."
+        type: string
+        default: "oci://ghcr.io/vaughnw128/charts"
+      merge-method:
+        description: "Pull request merge method: merge, squash, or rebase."
+        type: string
+        default: "squash"
+      require-approval:
+        description: "Require at least one approved review before release."
+        type: boolean
+        default: true
+      allow-forks:
+        description: "Whether to allow release commands for fork PRs."
+        type: boolean
+        default: false
+    outputs:
+      version:
+        description: "Released version without leading v."
+        value: ${{ jobs.parse.outputs.version }}
+      merged-sha:
+        description: "Commit SHA released after merge."
+        value: ${{ jobs.merge.outputs.merged_sha }}
+      image:
+        description: "Promoted image reference."
+        value: ${{ jobs.promote.outputs.image }}
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  packages: write
+  checks: read
+  actions: read
+
+jobs:
+  parse:
+    name: Parse Release Request
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.parse.outputs.should_run }}
+      version: ${{ steps.parse.outputs.version }}
+      tag: ${{ steps.parse.outputs.tag }}
+      pr_number: ${{ steps.parse.outputs.pr_number }}
+    steps:
+      - id: parse
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const body = `${{ inputs.comment-body }}`.trim();
+            const prefix = `${{ inputs.command-prefix }}`.trim();
+            const issueNumber = Number("${{ inputs.issue-number }}");
+            core.setOutput("should_run", "false");
+            core.setOutput("version", "");
+            core.setOutput("tag", "");
+            core.setOutput("pr_number", `${issueNumber}`);
+
+            if (!body.startsWith(prefix)) {
+              core.info(`Comment does not start with '${prefix}', skipping.`);
+              return;
+            }
+
+            const version = body.slice(prefix.length).trim().split(/\s+/)[0] || "";
+            const normalized = version.replace(/^v/, "");
+            if (!/^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/.test(normalized)) {
+              core.setFailed(`Release command must include a semantic version, e.g. '${prefix} v1.2.3'. Got '${version}'.`);
+              return;
+            }
+
+            core.setOutput("should_run", "true");
+            core.setOutput("version", normalized);
+            core.setOutput("tag", `v${normalized}`);
+
+  validate:
+    name: Validate Release Gate
+    needs: parse
+    if: ${{ needs.parse.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      head_sha: ${{ steps.validate.outputs.head_sha }}
+      base_ref: ${{ steps.validate.outputs.base_ref }}
+    steps:
+      - name: Get app token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
+      - id: validate
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const pull_number = Number("${{ needs.parse.outputs.pr_number }}");
+            const association = `${{ inputs.comment-author-association }}`;
+            const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+            const allowForks = `${{ inputs.allow-forks }}` === "true";
+            const requireApproval = `${{ inputs.require-approval }}` === "true";
+            const tag = `${{ needs.parse.outputs.tag }}`;
+
+            if (!trustedAssociations.has(association)) {
+              core.setFailed(`Comment author association '${association}' is not allowed to release.`);
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
+            if (pr.state !== "open") {
+              core.setFailed(`PR #${pull_number} is not open.`);
+              return;
+            }
+            if (!allowForks && pr.head.repo.full_name !== `${owner}/${repo}`) {
+              core.setFailed("Fork PR releases are disabled.");
+              return;
+            }
+
+            try {
+              await github.rest.git.getRef({ owner, repo, ref: `tags/${tag}` });
+              core.setFailed(`Tag ${tag} already exists.`);
+              return;
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+
+            if (requireApproval) {
+              const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number, per_page: 100 });
+              const latestByUser = new Map();
+              for (const review of reviews) latestByUser.set(review.user.login, review.state);
+              if (![...latestByUser.values()].includes("APPROVED")) {
+                core.setFailed("At least one current approving review is required before release.");
+                return;
+              }
+            }
+
+            const checkRuns = await github.paginate(github.rest.checks.listForRef, {
+              owner,
+              repo,
+              ref: pr.head.sha,
+              per_page: 100,
+            });
+            const requiredFailures = checkRuns.filter(run =>
+              run.name.toLowerCase().includes("verify") &&
+              run.conclusion !== "success"
+            );
+            const verifyRuns = checkRuns.filter(run => run.name.toLowerCase().includes("verify"));
+            if (!verifyRuns.length) {
+              core.setFailed("No verify check runs were found for the PR head SHA.");
+              return;
+            }
+            if (requiredFailures.length) {
+              core.setFailed(`Verify checks are not green: ${requiredFailures.map(r => `${r.name}=${r.conclusion}`).join(", ")}`);
+              return;
+            }
+
+            core.setOutput("head_sha", pr.head.sha);
+            core.setOutput("base_ref", pr.base.ref);
+
+      - name: Comment validation start
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number("${{ needs.parse.outputs.pr_number }}"),
+              body: "Release `${{ needs.parse.outputs.tag }}` requested. Gate checks passed; merging and building the protected-branch commit.",
+            });
+
+  merge:
+    name: Merge Pull Request
+    needs: [parse, validate]
+    if: ${{ needs.parse.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      merged_sha: ${{ steps.merge.outputs.merged_sha }}
+    steps:
+      - name: Get app token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
+      - id: merge
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const pull_number = Number("${{ needs.parse.outputs.pr_number }}");
+            const method = `${{ inputs.merge-method }}`;
+
+            const merge = await github.rest.pulls.merge({
+              owner,
+              repo,
+              pull_number,
+              merge_method: method,
+              commit_title: `Release ${{ needs.parse.outputs.tag }} (#${pull_number})`,
+            });
+
+            core.setOutput("merged_sha", merge.data.sha);
+
+  verify:
+    needs: [parse, merge]
+    if: ${{ needs.parse.outputs.should_run == 'true' }}
+    uses: vaughnw128/hakoniwa/.github/workflows/verify.yml@main
+    with:
+      ref: ${{ needs.merge.outputs.merged_sha }}
+      language: ${{ inputs.language }}
+      helm-path: ${{ inputs.helm-path }}
+      dockerfile: ${{ inputs.dockerfile }}
+      build-context: ${{ inputs.build-context }}
+      build-args: ${{ inputs.build-args }}
+      binary-name: ${{ inputs.binary-name }}
+    secrets: inherit
+
+  candidate:
+    needs: [parse, merge, verify]
+    if: ${{ needs.parse.outputs.should_run == 'true' }}
+    uses: vaughnw128/hakoniwa/.github/workflows/candidate.yml@main
+    with:
+      ref: ${{ needs.merge.outputs.merged_sha }}
+      candidate-kind: release-candidate
+      candidate-id: ${{ needs.parse.outputs.version }}
+      language: ${{ inputs.language }}
+      binary-name: ${{ inputs.binary-name }}
+      dockerfile: ${{ inputs.dockerfile }}
+      build-context: ${{ inputs.build-context }}
+      build-args: ${{ inputs.build-args }}
+      platforms: ${{ inputs.platforms }}
+      helm-path: ""
+      require-verify: false
+    secrets: inherit
+
+  tag:
+    name: Create Release Tag
+    needs: [parse, merge, candidate]
+    if: ${{ needs.parse.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get app token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
+      - name: Create tag on released commit
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: "refs/tags/${{ needs.parse.outputs.tag }}",
+              sha: "${{ needs.merge.outputs.merged_sha }}",
+            });
+
+  promote:
+    needs: [parse, merge, candidate, tag]
+    if: ${{ needs.parse.outputs.should_run == 'true' }}
+    uses: vaughnw128/hakoniwa/.github/workflows/promote.yml@main
+    with:
+      version: ${{ needs.parse.outputs.version }}
+      ref: ${{ needs.merge.outputs.merged_sha }}
+      image-digest: ${{ needs.candidate.outputs.digest }}
+      helm-path: ${{ inputs.helm-path }}
+      chart-name: ${{ inputs.chart-name }}
+      helm-registry: ${{ inputs.helm-registry }}
+    secrets: inherit
+
+  notify:
+    name: Notify Release
+    needs: [parse, merge, candidate, promote]
+    if: ${{ always() && needs.parse.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get app token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
+      - name: Comment release result
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const ok = "${{ needs.promote.result }}" === "success";
+            const body = ok
+              ? [
+                  "Released `${{ needs.parse.outputs.tag }}`.",
+                  "",
+                  "- Commit: `${{ needs.merge.outputs.merged_sha }}`",
+                  "- Image: `${{ needs.promote.outputs.image }}`",
+                ].join("\n")
+              : [
+                  "Release `${{ needs.parse.outputs.tag }}` did not complete.",
+                  "",
+                  "- Merge: `${{ needs.merge.result }}`",
+                  "- Candidate: `${{ needs.candidate.result }}`",
+                  "- Promote: `${{ needs.promote.result }}`",
+                  `- Run: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                ].join("\n");
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number("${{ needs.parse.outputs.pr_number }}"),
+              body,
+            });

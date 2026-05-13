@@ -3,6 +3,7 @@
 name: "my-app"
 image: "ghcr.io/vaughnw128/my-app"
 # imageTag: "1.2.3"
+# imageDigest: "sha256:..." # optional immutable digest; overrides imageTag when set
 imagePullPolicy: IfNotPresent
 # imagePullSecrets: []
 

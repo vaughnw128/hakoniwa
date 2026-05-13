@@ -33,7 +33,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: migrate
-          image: "{{ .Values.db.migrate.image | default (printf "%s:%s" .Values.image (default .Chart.AppVersion .Values.imageTag)) }}"
+          image: "{{ .Values.db.migrate.image | default (ternary (printf "%s@%s" .Values.image .Values.imageDigest) (printf "%s:%s" .Values.image (default .Chart.AppVersion .Values.imageTag)) (ne (default "" .Values.imageDigest) "")) }}"
           imagePullPolicy: {{ .Values.imagePullPolicy | default "IfNotPresent" }}
           securityContext:
             {{- include "single-container.containerSecurityContext" . | nindent 12 }}

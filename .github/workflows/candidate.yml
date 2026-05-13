@@ -1,0 +1,265 @@
+name: Candidate
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref or SHA to build."
+        type: string
+        required: true
+      candidate-kind:
+        description: "Candidate kind used in tags: pr, sha, staging, or main."
+        type: string
+        default: "sha"
+      candidate-id:
+        description: "Candidate identifier, such as PR number or staging name."
+        type: string
+        default: ""
+      language:
+        description: "Primary language: python, rust, go, or none."
+        type: string
+        default: "none"
+      binary-name:
+        description: "Rust binary name (required when language=rust)."
+        type: string
+        default: ""
+      dockerfile:
+        description: "Path to Dockerfile."
+        type: string
+        default: "./Dockerfile"
+      build-context:
+        description: "Docker build context."
+        type: string
+        default: "."
+      build-args:
+        description: "Extra Docker build-args."
+        type: string
+        default: ""
+      platforms:
+        description: "Docker platforms."
+        type: string
+        default: "linux/amd64,linux/arm64"
+      image-repo:
+        description: "Container image repository. Defaults to ghcr.io/<owner>/<repo>."
+        type: string
+        default: ""
+      helm-path:
+        description: "Path to Helm chart directory (empty to skip preview chart)."
+        type: string
+        default: ""
+      chart-name:
+        description: "Helm chart package name. Defaults to repository name."
+        type: string
+        default: ""
+      chart-registry:
+        description: "OCI registry for preview charts. Defaults to oci://ghcr.io/<owner>/charts."
+        type: string
+        default: ""
+      retention-days:
+        description: "Retention days for uploaded chart artifacts."
+        type: number
+        default: 30
+      helm-image-repository-key:
+        description: "YQ path for the chart image repository value."
+        type: string
+        default: "single-container.image"
+      helm-image-tag-key:
+        description: "YQ path for the chart image tag value."
+        type: string
+        default: "single-container.imageTag"
+      helm-image-digest-key:
+        description: "YQ path for the chart image digest value."
+        type: string
+        default: "single-container.imageDigest"
+      require-verify:
+        description: "Run verify.yml for the candidate ref before building."
+        type: boolean
+        default: true
+    outputs:
+      image:
+        description: "Immutable candidate image reference."
+        value: ${{ jobs.meta.outputs.image }}
+      image_repo:
+        description: "Resolved image repository."
+        value: ${{ jobs.meta.outputs.image_repo }}
+      image_tag:
+        description: "Resolved immutable candidate image tag."
+        value: ${{ jobs.meta.outputs.image_tag }}
+      floating_image:
+        description: "Mutable candidate image reference."
+        value: ${{ jobs.meta.outputs.floating_image }}
+      digest:
+        description: "Built image digest."
+        value: ${{ jobs.container.outputs.digest }}
+      chart_version:
+        description: "Preview chart version."
+        value: ${{ jobs.meta.outputs.chart_version }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  meta:
+    name: Candidate Metadata
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.compute.outputs.image }}
+      image_repo: ${{ steps.compute.outputs.image_repo }}
+      image_tag: ${{ steps.compute.outputs.image_tag }}
+      floating_image: ${{ steps.compute.outputs.floating_image }}
+      floating_tag: ${{ steps.compute.outputs.floating_tag }}
+      short_sha: ${{ steps.compute.outputs.short_sha }}
+      chart_name: ${{ steps.compute.outputs.chart_name }}
+      chart_registry: ${{ steps.compute.outputs.chart_registry }}
+      chart_version: ${{ steps.compute.outputs.chart_version }}
+    steps:
+      - id: compute
+        shell: bash
+        run: |
+          repo_name="${GITHUB_REPOSITORY#*/}"
+          ref="${{ inputs.ref }}"
+          short_sha="${ref:0:7}"
+          kind="${{ inputs.candidate-kind }}"
+          id="${{ inputs.candidate-id }}"
+
+          image_repo="${{ inputs.image-repo }}"
+          [ -z "$image_repo" ] && image_repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+
+          if [ -n "$id" ]; then
+            image_tag="${kind}-${id}-${short_sha}"
+            floating_tag="${kind}-${id}"
+          else
+            image_tag="${kind}-${short_sha}"
+            floating_tag="${kind}"
+          fi
+
+          chart_name="${{ inputs.chart-name }}"
+          [ -z "$chart_name" ] && chart_name="$repo_name"
+
+          chart_registry="${{ inputs.chart-registry }}"
+          [ -z "$chart_registry" ] && chart_registry="oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
+
+          if [ "$kind" = "pr" ] && [ -n "$id" ]; then
+            chart_version="0.0.0-pr.${id}.${GITHUB_RUN_NUMBER}"
+          else
+            chart_version="0.0.0-${kind}.${GITHUB_RUN_NUMBER}"
+          fi
+
+          {
+            echo "image=${image_repo}:${image_tag}"
+            echo "image_repo=${image_repo}"
+            echo "image_tag=${image_tag}"
+            echo "floating_image=${image_repo}:${floating_tag}"
+            echo "floating_tag=${floating_tag}"
+            echo "short_sha=${short_sha}"
+            echo "chart_name=${chart_name}"
+            echo "chart_registry=${chart_registry}"
+            echo "chart_version=${chart_version}"
+          } >> "$GITHUB_OUTPUT"
+
+  validate:
+    name: Validate Inputs
+    runs-on: ubuntu-latest
+    steps:
+      - if: ${{ inputs.language == 'rust' && inputs.binary-name == '' }}
+        run: |
+          echo "::error::binary-name is required when language=rust"
+          exit 1
+
+  verify:
+    needs: validate
+    if: ${{ inputs.require-verify }}
+    uses: vaughnw128/hakoniwa/.github/workflows/verify.yml@main
+    with:
+      ref: ${{ inputs.ref }}
+      language: ${{ inputs.language }}
+      helm-path: ${{ inputs.helm-path }}
+      dockerfile: ${{ inputs.dockerfile }}
+      build-context: ${{ inputs.build-context }}
+      build-args: ${{ inputs.build-args }}
+      binary-name: ${{ inputs.binary-name }}
+    secrets: inherit
+
+  build-rust-amd64:
+    needs: [validate, verify]
+    if: ${{ always() && inputs.language == 'rust' && (needs.verify.result == 'success' || (!inputs.require-verify && needs.verify.result == 'skipped')) }}
+    uses: vaughnw128/hakoniwa/.github/workflows/build-rust-binary.yml@main
+    with:
+      binary-name: ${{ inputs.binary-name }}
+      ref: ${{ inputs.ref }}
+      target: x86_64-unknown-linux-gnu
+
+  build-rust-arm64:
+    needs: [validate, verify]
+    if: ${{ always() && inputs.language == 'rust' && (needs.verify.result == 'success' || (!inputs.require-verify && needs.verify.result == 'skipped')) }}
+    uses: vaughnw128/hakoniwa/.github/workflows/build-rust-binary.yml@main
+    with:
+      binary-name: ${{ inputs.binary-name }}
+      ref: ${{ inputs.ref }}
+      target: aarch64-unknown-linux-gnu
+
+  container:
+    name: Build Candidate Image
+    needs: [meta, validate, verify, build-rust-amd64, build-rust-arm64]
+    if: ${{ always() && needs.meta.result == 'success' && needs.validate.result == 'success' && (needs.verify.result == 'success' || (!inputs.require-verify && needs.verify.result == 'skipped')) && (inputs.language != 'rust' || (needs.build-rust-amd64.result == 'success' && needs.build-rust-arm64.result == 'success')) }}
+    uses: vaughnw128/hakoniwa/.github/workflows/container-build.yml@main
+    with:
+      ref: ${{ inputs.ref }}
+      dockerfile: ${{ inputs.dockerfile }}
+      build-context: ${{ inputs.build-context }}
+      platforms: ${{ inputs.platforms }}
+      push: true
+      tags: |
+        ${{ needs.meta.outputs.image }}
+        ${{ needs.meta.outputs.floating_image }}
+      build-args: |
+        git_sha=${{ inputs.ref }}
+        ${{ inputs.language == 'rust' && format('BINARY_NAME={0}', inputs.binary-name) || '' }}
+        ${{ inputs.build-args }}
+      artifact-amd64-name: ${{ inputs.language == 'rust' && format('{0}-x86_64-unknown-linux-gnu', inputs.binary-name) || '' }}
+      artifact-arm64-name: ${{ inputs.language == 'rust' && format('{0}-aarch64-unknown-linux-gnu', inputs.binary-name) || '' }}
+      executable-paths: |
+        ${{ inputs.language == 'rust' && format('dist/linux/amd64/{0}', inputs.binary-name) || '' }}
+        ${{ inputs.language == 'rust' && format('dist/linux/arm64/{0}', inputs.binary-name) || '' }}
+    secrets: inherit
+
+  chart:
+    name: Package Candidate Chart
+    needs: [meta, container]
+    if: ${{ always() && needs.container.result == 'success' && inputs.helm-path != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: azure/setup-helm@v5
+
+      - name: Stamp chart with candidate image
+        uses: mikefarah/yq@v4.45.4
+        with:
+          cmd: |
+            yq -i '.version = "${{ needs.meta.outputs.chart_version }}"' ${{ inputs.helm-path }}/Chart.yaml
+            yq -i '.appVersion = "${{ needs.meta.outputs.image_tag }}"' ${{ inputs.helm-path }}/Chart.yaml
+            yq -i '.${{ inputs.helm-image-repository-key }} = "${{ needs.meta.outputs.image_repo }}"' ${{ inputs.helm-path }}/values.yaml
+            yq -i '.${{ inputs.helm-image-tag-key }} = "${{ needs.meta.outputs.image_tag }}"' ${{ inputs.helm-path }}/values.yaml
+            yq -i '.${{ inputs.helm-image-digest-key }} = "${{ needs.container.outputs.digest }}"' ${{ inputs.helm-path }}/values.yaml
+
+      - name: Login to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Package and push chart
+        run: |
+          helm dependency build "${{ inputs.helm-path }}"
+          helm package "${{ inputs.helm-path }}" \
+            --version "${{ needs.meta.outputs.chart_version }}" \
+            --app-version "${{ needs.meta.outputs.image_tag }}"
+          helm push "./${{ needs.meta.outputs.chart_name }}-${{ needs.meta.outputs.chart_version }}.tgz" "${{ needs.meta.outputs.chart_registry }}"
+
+      - name: Upload chart artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.meta.outputs.chart_name }}-candidate-chart
+          path: ./${{ needs.meta.outputs.chart_name }}-${{ needs.meta.outputs.chart_version }}.tgz
+          retention-days: ${{ inputs.retention-days }}

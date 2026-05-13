@@ -3,36 +3,48 @@ name: Code Quality & Tests
 on:
   workflow_call:
     inputs:
+      ref:
+        description: "Git ref or SHA to verify. Defaults to the triggering SHA."
+        type: string
+        default: ""
       language:
-        description: "Primary language: python, rust, go, or none"
+        description: "Primary language: python, rust, go, or none."
         type: string
         required: true
       helm-path:
-        description: "Path to Helm chart directory (empty to skip)"
+        description: "Path to Helm chart directory (empty to skip)."
         type: string
         default: ""
       dockerfile:
-        description: "Path to Dockerfile for PR build test (empty to skip)"
+        description: "Path to Dockerfile for a no-push build check (empty to skip)."
         type: string
         default: "./Dockerfile"
+      build-context:
+        description: "Docker build context."
+        type: string
+        default: "."
+      build-args:
+        description: "Extra Docker build-args for the no-push build."
+        type: string
+        default: ""
       python-version:
-        description: "Python version (only used when language=python)"
+        description: "Python version (only used when language=python)."
         type: string
         default: "3.13"
       rust-toolchain:
-        description: "Rust toolchain (only used when language=rust)"
+        description: "Rust toolchain (only used when language=rust)."
         type: string
         default: "stable"
       binary-name:
-        description: "Binary name for Rust builds (matches Cargo.toml package name)"
+        description: "Binary name for Rust builds (matches Cargo.toml package name)."
         type: string
         default: ""
       go-version:
-        description: "Go version (only used when language=go)"
+        description: "Go version (only used when language=go)."
         type: string
         default: "1.22"
       extra-test-command:
-        description: "Additional test command to run"
+        description: "Additional test command to run."
         type: string
         default: ""
 
@@ -41,163 +53,17 @@ permissions:
   packages: read
 
 jobs:
-  code-quality:
-    name: Code Quality
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      # Python
-      - name: Install uv
-        if: inputs.language == 'python'
-        uses: astral-sh/setup-uv@v5
-
-      - name: Ruff format check
-        if: inputs.language == 'python'
-        uses: astral-sh/ruff-action@v3
-        with:
-          args: "format --check"
-
-      - name: Ruff lint
-        if: inputs.language == 'python'
-        uses: astral-sh/ruff-action@v3
-
-      # Rust
-      - name: Setup Rust toolchain
-        if: inputs.language == 'rust'
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ inputs.rust-toolchain }}
-          components: rustfmt, clippy
-
-      - name: Rust format check
-        if: inputs.language == 'rust'
-        run: cargo fmt --check
-
-      - name: Clippy
-        if: inputs.language == 'rust'
-        run: cargo clippy -- -D warnings
-
-      # Go
-      - name: Setup Go
-        if: inputs.language == 'go'
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ inputs.go-version }}
-
-      - name: Go vet
-        if: inputs.language == 'go'
-        run: go vet ./...
-
-      - name: golangci-lint
-        if: inputs.language == 'go'
-        uses: golangci/golangci-lint-action@v6
-
-      # Helm
-      - name: Set up Helm
-        if: inputs.helm-path != ''
-        uses: azure/setup-helm@v4.3.0
-
-      - name: Login to GitHub Container Registry
-        if: inputs.helm-path != ''
-        run: echo "${{ github.token }}" | helm registry login ghcr.io -u $ --password-stdin
-
-      - name: Helm dependency build
-        if: inputs.helm-path != ''
-        run: helm dependency build ${{ inputs.helm-path }}
-
-      - name: Helm lint
-        if: inputs.helm-path != ''
-        run: helm lint ${{ inputs.helm-path }}
-
-      - name: Helm template
-        if: inputs.helm-path != ''
-        run: helm template ${{ inputs.helm-path }}
-
-      # Docker build test
-      - name: Set up Docker Buildx
-        if: inputs.dockerfile != '' && github.event_name == 'pull_request'
-        uses: docker/setup-buildx-action@v3
-
-      - name: Cache Rust dependencies (PR test)
-        if: inputs.language == 'rust' && inputs.dockerfile != '' && github.event_name == 'pull_request'
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build Rust binary for Docker test
-        if: inputs.language == 'rust' && inputs.binary-name != '' && inputs.dockerfile != '' && github.event_name == 'pull_request'
-        run: |
-          cargo build --release
-          mkdir -p dist/linux/amd64
-          cp target/release/${{ inputs.binary-name }} dist/linux/amd64/${{ inputs.binary-name }}
-
-      - name: Build Docker image (test only, non-Rust)
-        if: inputs.language != 'rust' && inputs.dockerfile != '' && github.event_name == 'pull_request'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ inputs.dockerfile }}
-          push: false
-
-      - name: Build Docker image (test only, Rust)
-        if: inputs.language == 'rust' && inputs.binary-name != '' && inputs.dockerfile != '' && github.event_name == 'pull_request'
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ inputs.dockerfile }}
-          push: false
-          platforms: linux/amd64
-          build-args: |
-            BINARY_NAME=${{ inputs.binary-name }}
-
-  tests:
-    name: Test Suite
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      # Python
-      - name: Install uv
-        if: inputs.language == 'python'
-        uses: astral-sh/setup-uv@v5
-
-      - name: Sync dependencies
-        if: inputs.language == 'python'
-        run: uv sync --all-groups
-
-      - name: Pytest
-        if: inputs.language == 'python'
-        run: |
-          if [ -d "tests" ] && [ -n "$(find tests -name 'test_*.py' -o -name '*_test.py' 2>/dev/null)" ]; then
-            uv run pytest
-          else
-            echo "No tests found, skipping"
-          fi
-
-      # Rust
-      - name: Setup Rust toolchain
-        if: inputs.language == 'rust'
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ inputs.rust-toolchain }}
-
-      - name: Cargo test
-        if: inputs.language == 'rust'
-        run: cargo test
-
-      # Go
-      - name: Setup Go
-        if: inputs.language == 'go'
-        uses: actions/setup-go@v5
-        with:
-          go-version: ${{ inputs.go-version }}
-
-      - name: Go test
-        if: inputs.language == 'go'
-        run: go test ./...
-
-      # Extra
-      - name: Run extra test command
-        if: inputs.extra-test-command != ''
-        run: ${{ inputs.extra-test-command }}
+  verify:
+    uses: vaughnw128/hakoniwa/.github/workflows/verify.yml@main
+    with:
+      ref: ${{ inputs.ref }}
+      language: ${{ inputs.language }}
+      helm-path: ${{ inputs.helm-path }}
+      dockerfile: ${{ inputs.dockerfile }}
+      build-context: ${{ inputs.build-context }}
+      build-args: ${{ inputs.build-args }}
+      python-version: ${{ inputs.python-version }}
+      rust-toolchain: ${{ inputs.rust-toolchain }}
+      binary-name: ${{ inputs.binary-name }}
+      go-version: ${{ inputs.go-version }}
+      extra-test-command: ${{ inputs.extra-test-command }}

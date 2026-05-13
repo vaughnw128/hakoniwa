@@ -28,7 +28,7 @@ spec:
 
       containers:
         - name: {{ include "single-container.name" . }}
-          image: "{{ .Values.image }}:{{ .Values.imageTag | default .Chart.AppVersion }}"
+          image: "{{ .Values.image }}{{- if .Values.imageDigest }}@{{ .Values.imageDigest }}{{- else }}:{{ .Values.imageTag | default .Chart.AppVersion }}{{- end }}"
           imagePullPolicy: {{ .Values.imagePullPolicy | default "IfNotPresent" }}
           securityContext:
             {{- include "single-container.containerSecurityContext" . | nindent 12 }}

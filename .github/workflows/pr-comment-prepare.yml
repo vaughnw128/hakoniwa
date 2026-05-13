@@ -33,6 +33,12 @@ on:
       pr_number:
         description: "Normalized PR number"
         value: ${{ jobs.prepare.outputs.pr_number }}
+      command:
+        description: "Parsed command: build, release, promote, or custom"
+        value: ${{ jobs.prepare.outputs.command }}
+      version:
+        description: "Parsed release version without leading v, when present"
+        value: ${{ jobs.prepare.outputs.version }}
 
 permissions:
   contents: read
@@ -46,6 +52,8 @@ jobs:
       should_run: ${{ steps.prepare.outputs.should_run }}
       head_sha: ${{ steps.prepare.outputs.head_sha }}
       pr_number: ${{ steps.prepare.outputs.pr_number }}
+      command: ${{ steps.prepare.outputs.command }}
+      version: ${{ steps.prepare.outputs.version }}
     steps:
       - name: Resolve PR context
         id: prepare
@@ -63,10 +71,24 @@ jobs:
             core.setOutput("should_run", "false");
             core.setOutput("head_sha", "");
             core.setOutput("pr_number", `${issueNumber}`);
+            core.setOutput("command", "");
+            core.setOutput("version", "");
 
             if (!commentBody.startsWith(commandPrefix)) {
               core.info(`Comment does not start with '${commandPrefix}', skipping.`);
               return;
+            }
+
+            const rest = commentBody.slice(commandPrefix.length).trim();
+            const [command = "custom", arg = ""] = rest.split(/\s+/);
+            core.setOutput("command", command);
+            if (command === "release") {
+              const version = arg.replace(/^v/, "");
+              if (!/^\d+\.\d+\.\d+([-+][0-9A-Za-z.-]+)?$/.test(version)) {
+                core.info("Release command did not include a valid semantic version.");
+                return;
+              }
+              core.setOutput("version", version);
             }
 
             if (!trustedAssociations.has(association)) {

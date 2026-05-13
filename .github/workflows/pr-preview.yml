@@ -32,7 +32,7 @@ on:
         type: string
         default: ""
       platforms:
-        description: "Docker platforms (comma-separated)."
+        description: "Docker platforms."
         type: string
         default: "linux/amd64,linux/arm64"
       helm-path:
@@ -46,14 +46,26 @@ on:
       retention-days:
         description: "Retention days for uploaded chart artifacts."
         type: number
-        default: 7
+        default: 30
+      helm-image-repository-key:
+        description: "YQ path for the chart image repository value."
+        type: string
+        default: "single-container.image"
+      helm-image-tag-key:
+        description: "YQ path for the chart image tag value."
+        type: string
+        default: "single-container.imageTag"
+      helm-image-digest-key:
+        description: "YQ path for the chart image digest value."
+        type: string
+        default: "single-container.imageDigest"
     outputs:
       image:
         description: "Preview image reference."
-        value: ${{ jobs.prepare.outputs.image }}
+        value: ${{ jobs.candidate.outputs.image }}
       chart-version:
         description: "Preview chart version."
-        value: ${{ jobs.prepare.outputs.chart_version }}
+        value: ${{ jobs.candidate.outputs.chart_version }}
 
 permissions:
   contents: read
@@ -62,26 +74,8 @@ permissions:
   pull-requests: write
 
 jobs:
-  validate:
-    name: Validate Inputs
-    runs-on: ubuntu-latest
-    steps:
-      - if: ${{ inputs.language == 'rust' && inputs.binary-name == '' }}
-        run: |
-          echo "::error::binary-name is required when language=rust"
-          exit 1
-
-  prepare:
-    needs: validate
-    uses: vaughnw128/hakoniwa/.github/workflows/preview-meta.yml@main
-    with:
-      pr-number: ${{ inputs.pr-number }}
-      head-sha: ${{ inputs.head-sha }}
-      chart-name: ${{ inputs.chart-name }}
-
   announce:
     name: Announce Preview Start
-    needs: prepare
     runs-on: ubuntu-latest
     steps:
       - name: Get app token
@@ -101,93 +95,36 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: Number("${{ inputs.pr-number }}"),
-              body: `Preview build started.\n\n- Image: \`${{ needs.prepare.outputs.image }}\`\n- Commit: \`${sha}\``,
+              body: `Preview build started.\n\n- Commit: \`${sha}\``,
             });
 
-  build-rust-amd64:
-    if: ${{ inputs.language == 'rust' }}
-    needs: prepare
-    uses: vaughnw128/hakoniwa/.github/workflows/build-rust-binary.yml@main
+  candidate:
+    name: Build Candidate
+    needs: announce
+    uses: vaughnw128/hakoniwa/.github/workflows/candidate.yml@main
     with:
+      ref: ${{ inputs.head-sha }}
+      candidate-kind: pr
+      candidate-id: ${{ inputs.pr-number }}
+      language: ${{ inputs.language }}
       binary-name: ${{ inputs.binary-name }}
-      ref: ${{ inputs.head-sha }}
-      target: x86_64-unknown-linux-gnu
-
-  build-rust-arm64:
-    if: ${{ inputs.language == 'rust' }}
-    needs: prepare
-    uses: vaughnw128/hakoniwa/.github/workflows/build-rust-binary.yml@main
-    with:
-      binary-name: ${{ inputs.binary-name }}
-      ref: ${{ inputs.head-sha }}
-      target: aarch64-unknown-linux-gnu
-
-  container:
-    needs: [prepare, build-rust-amd64, build-rust-arm64]
-    if: ${{ always() && needs.prepare.result == 'success' && (inputs.language != 'rust' || (needs.build-rust-amd64.result == 'success' && needs.build-rust-arm64.result == 'success')) }}
-    uses: vaughnw128/hakoniwa/.github/workflows/container-build.yml@main
-    with:
-      ref: ${{ inputs.head-sha }}
       dockerfile: ${{ inputs.dockerfile }}
       build-context: ${{ inputs.build-context }}
+      build-args: ${{ inputs.build-args }}
       platforms: ${{ inputs.platforms }}
-      push: true
-      tags: |
-        ${{ needs.prepare.outputs.image }}
-        ${{ needs.prepare.outputs.image_repo }}:${{ needs.prepare.outputs.image_tag_floating }}
-      build-args: |
-        ${{ inputs.language == 'rust' && format('BINARY_NAME={0}', inputs.binary-name) || '' }}
-        ${{ inputs.build-args }}
-      artifact-amd64-name: ${{ inputs.language == 'rust' && format('{0}-x86_64-unknown-linux-gnu', inputs.binary-name) || '' }}
-      artifact-arm64-name: ${{ inputs.language == 'rust' && format('{0}-aarch64-unknown-linux-gnu', inputs.binary-name) || '' }}
-      executable-paths: |
-        ${{ inputs.language == 'rust' && format('dist/linux/amd64/{0}', inputs.binary-name) || '' }}
-        ${{ inputs.language == 'rust' && format('dist/linux/arm64/{0}', inputs.binary-name) || '' }}
+      helm-path: ${{ inputs.helm-path }}
+      chart-name: ${{ inputs.chart-name }}
+      retention-days: ${{ inputs.retention-days }}
+      helm-image-repository-key: ${{ inputs.helm-image-repository-key }}
+      helm-image-tag-key: ${{ inputs.helm-image-tag-key }}
+      helm-image-digest-key: ${{ inputs.helm-image-digest-key }}
+      require-verify: true
     secrets: inherit
-
-  chart:
-    name: Package Preview Chart
-    needs: [prepare, container]
-    if: ${{ always() && needs.container.result == 'success' && inputs.helm-path != '' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.head-sha }}
-
-      - uses: azure/setup-helm@v5
-
-      - name: Stamp chart with preview image
-        uses: mikefarah/yq@v4.45.4
-        with:
-          cmd: |
-            yq -i '.version = "${{ needs.prepare.outputs.chart_version }}"' ${{ inputs.helm-path }}/Chart.yaml
-            yq -i '.appVersion = "${{ needs.prepare.outputs.image_tag }}"' ${{ inputs.helm-path }}/Chart.yaml
-            yq -i '.single-container.image = "${{ needs.prepare.outputs.image_repo }}"' ${{ inputs.helm-path }}/values.yaml
-            yq -i '.single-container.imageTag = "${{ needs.prepare.outputs.image_tag }}"' ${{ inputs.helm-path }}/values.yaml
-
-      - name: Login to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
-
-      - name: Package and push chart
-        run: |
-          helm dependency build "${{ inputs.helm-path }}"
-          helm package "${{ inputs.helm-path }}" \
-            --version "${{ needs.prepare.outputs.chart_version }}" \
-            --app-version "${{ needs.prepare.outputs.image_tag }}"
-          helm push "./${{ needs.prepare.outputs.chart_name }}-${{ needs.prepare.outputs.chart_version }}.tgz" "${{ needs.prepare.outputs.chart_registry }}"
-
-      - name: Upload chart artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ needs.prepare.outputs.chart_name }}-preview-chart-${{ inputs.pr-number }}
-          path: ./${{ needs.prepare.outputs.chart_name }}-${{ needs.prepare.outputs.chart_version }}.tgz
-          retention-days: ${{ inputs.retention-days }}
 
   notify:
     name: Notify Result
-    needs: [prepare, build-rust-amd64, build-rust-arm64, container, chart]
-    if: ${{ always() && needs.prepare.result == 'success' }}
+    needs: candidate
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
       - name: Get app token
@@ -202,28 +139,26 @@ jobs:
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
-            const results = {
-              "build-rust-amd64": "${{ needs.build-rust-amd64.result }}",
-              "build-rust-arm64": "${{ needs.build-rust-arm64.result }}",
-              container: "${{ needs.container.result }}",
-              chart: "${{ needs.chart.result }}",
-            };
-            const failed = Object.entries(results)
-              .filter(([, r]) => r === "failure" || r === "cancelled")
-              .map(([n]) => n);
-
             const sha = "${{ inputs.head-sha }}".slice(0, 7);
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const lines = [];
+            const ok = "${{ needs.candidate.result }}" === "success";
+            const lines = ok
+              ? [
+                  "Preview build is ready.",
+                  "",
+                  "- Image: `${{ needs.candidate.outputs.image }}`",
+                  "- Digest: `${{ needs.candidate.outputs.digest }}`",
+                  "- Commit: `" + sha + "`",
+                ]
+              : [
+                  "Preview build failed.",
+                  "",
+                  "- Commit: `" + sha + "`",
+                  "- Run: " + runUrl,
+                ];
 
-            if (failed.length) {
-              lines.push("Preview build failed.", "", `- Failed jobs: \`${failed.join(", ")}\``, `- Commit: \`${sha}\``, `- Run: ${runUrl}`);
-            } else {
-              lines.push("Preview build is ready.", "", "- Image: `${{ needs.prepare.outputs.image }}`");
-              if ("${{ inputs.helm-path }}" !== "") {
-                const chartRef = "${{ needs.prepare.outputs.chart_registry }}/${{ needs.prepare.outputs.chart_name }}";
-                lines.push(`- Chart: \`${chartRef}\``, "- Chart version: `${{ needs.prepare.outputs.chart_version }}`");
-              }
+            if (ok && "${{ inputs.helm-path }}" !== "") {
+              lines.push("- Chart version: `${{ needs.candidate.outputs.chart_version }}`");
             }
 
             await github.rest.issues.createComment({
