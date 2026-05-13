@@ -66,6 +66,9 @@ on:
       chart-version:
         description: "Preview chart version."
         value: ${{ jobs.candidate.outputs.chart_version }}
+      chart-url:
+        description: "Preview chart OCI reference without version."
+        value: ${{ jobs.candidate.outputs.chart_url }}
 
 permissions:
   contents: read
@@ -149,8 +152,10 @@ jobs:
                   "Preview build is ready.",
                   "",
                   "- Image: `${{ needs.candidate.outputs.image }}`",
+                  "- Docker image tag: `${{ needs.candidate.outputs.image_tag }}`",
                   "- Digest: `${{ needs.candidate.outputs.digest }}`",
                   "- Commit: `" + sha + "`",
+                  "- Run: " + runUrl,
                 ]
               : [
                   "Preview build failed.",
@@ -160,6 +165,7 @@ jobs:
                 ];
 
             if (ok && "${{ inputs.helm-path }}" !== "") {
+              lines.push("- Chart URL: `${{ needs.candidate.outputs.chart_url }}`");
               lines.push("- Chart version: `${{ needs.candidate.outputs.chart_version }}`");
             }
 

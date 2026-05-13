@@ -68,9 +68,13 @@ on:
         type: string
         default: "squash"
       require-approval:
-        description: "Require at least one approved review before release."
+        description: "Deprecated. Require at least one approved review before release when required-approvals is unset."
         type: boolean
         default: true
+      required-approvals:
+        description: "Number of current approving reviews required before release. Empty uses require-approval for compatibility."
+        type: string
+        default: ""
       allow-forks:
         description: "Whether to allow release commands for fork PRs."
         type: boolean
@@ -175,8 +179,17 @@ jobs:
             const association = `${{ inputs.comment-author-association }}`;
             const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
             const allowForks = `${{ inputs.allow-forks }}` === "true";
-            const requireApproval = `${{ inputs.require-approval }}` === "true";
+            const requiredApprovalsRaw = `${{ inputs.required-approvals }}`.trim();
+            const legacyRequireApproval = `${{ inputs.require-approval }}` === "true";
+            const requiredApprovals = requiredApprovalsRaw === ""
+              ? (legacyRequireApproval ? 1 : 0)
+              : Number(requiredApprovalsRaw);
             const tag = `${{ needs.parse.outputs.tag }}`;
+
+            if (!Number.isInteger(requiredApprovals) || requiredApprovals < 0) {
+              core.setFailed(`required-approvals must be a non-negative integer. Got '${requiredApprovalsRaw}'.`);
+              return;
+            }
 
             if (!trustedAssociations.has(association)) {
               core.setFailed(`Comment author association '${association}' is not allowed to release.`);
@@ -201,12 +214,13 @@ jobs:
               if (error.status !== 404) throw error;
             }
 
-            if (requireApproval) {
+            if (requiredApprovals > 0) {
               const reviews = await github.paginate(github.rest.pulls.listReviews, { owner, repo, pull_number, per_page: 100 });
               const latestByUser = new Map();
               for (const review of reviews) latestByUser.set(review.user.login, review.state);
-              if (![...latestByUser.values()].includes("APPROVED")) {
-                core.setFailed("At least one current approving review is required before release.");
+              const approvalCount = [...latestByUser.values()].filter(state => state === "APPROVED").length;
+              if (approvalCount < requiredApprovals) {
+                core.setFailed(`Release requires ${requiredApprovals} current approving review(s); found ${approvalCount}.`);
                 return;
               }
             }

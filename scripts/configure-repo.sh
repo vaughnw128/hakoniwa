@@ -21,6 +21,7 @@ Options:
   --preview-command TEXT  Preview command. Default: euclid build.
   --release-command TEXT  Release command prefix. Default: euclid release.
   --merge-method METHOD   merge, squash, or rebase. Default: squash.
+  --required-approvals N  Current approving reviews required for release. Default: 1.
   --no-pr-check           Do not write verify-pr.yml.
   --no-security           Do not write security.yml.
   --no-help               Do not write pr-help.yml.
@@ -43,6 +44,7 @@ workflow_ref="main"
 preview_command="euclid build"
 release_command="euclid release"
 merge_method="squash"
+required_approvals="1"
 write_help=1
 write_preview=1
 write_release=1
@@ -64,6 +66,7 @@ while [[ $# -gt 0 ]]; do
     --preview-command) preview_command="${2:?missing value for --preview-command}"; shift 2 ;;
     --release-command) release_command="${2:?missing value for --release-command}"; shift 2 ;;
     --merge-method) merge_method="${2:?missing value for --merge-method}"; shift 2 ;;
+    --required-approvals) required_approvals="${2:?missing value for --required-approvals}"; shift 2 ;;
     --no-pr-check) write_pr_check=0; shift ;;
     --no-security) write_security=0; shift ;;
     --no-help) write_help=0; shift ;;
@@ -90,6 +93,11 @@ case "$merge_method" in
   merge|squash|rebase) ;;
   *) echo "--merge-method must be merge, squash, or rebase" >&2; exit 2 ;;
 esac
+
+if [[ ! "$required_approvals" =~ ^[0-9]+$ ]]; then
+  echo "--required-approvals must be a non-negative integer" >&2
+  exit 2
+fi
 
 repo="$(cd "$repo" && pwd)"
 workflow_dir="$repo/.github/workflows"
@@ -227,6 +235,7 @@ jobs:
       pr-number: \${{ github.event.pull_request.number }}
       preview-command: $preview_command
       release-command: $release_command
+      required-approvals: "$required_approvals"
     secrets: inherit
 EOF
 )
@@ -282,6 +291,58 @@ $python_line$binary_line$helm_line$chart_line
 $platforms_line
 $cache_line
     secrets: inherit
+
+  notify:
+    name: Notify PR Candidate
+    needs: [prepare, candidate]
+    if: \${{ always() && needs.prepare.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Get app token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: \${{ vars.APP_ID }}
+          private-key: \${{ secrets.PRIVATE_KEY }}
+
+      - name: Comment candidate result
+        uses: actions/github-script@v8
+        with:
+          github-token: \${{ steps.app-token.outputs.token }}
+          script: |
+            const ok = "\${{ needs.candidate.result }}" === "success";
+            const runUrl = \`https://github.com/\${context.repo.owner}/\${context.repo.repo}/actions/runs/\${context.runId}\`;
+            const lines = ok
+              ? [
+                  "PR candidate build succeeded.",
+                  "",
+                  "- Image: \`\${{ needs.candidate.outputs.image }}\`",
+                  "- Docker image tag: \`\${{ needs.candidate.outputs.image_tag }}\`",
+                  "- Digest: \`\${{ needs.candidate.outputs.digest }}\`",
+                  "- Run: " + runUrl,
+                ]
+              : [
+                  "PR candidate build failed.",
+                  "",
+                  "- Prepare: \`\${{ needs.prepare.result }}\`",
+                  "- Candidate: \`\${{ needs.candidate.result }}\`",
+                  "- Run: " + runUrl,
+                ];
+
+            if (ok && "$helm_path" !== "") {
+              lines.push("- Chart URL: \`\${{ needs.candidate.outputs.chart_url }}\`");
+              lines.push("- Chart version: \`\${{ needs.candidate.outputs.chart_version }}\`");
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number("\${{ needs.prepare.outputs.pr_number }}"),
+              body: lines.join("\\n"),
+            });
 EOF
 )
   write_workflow "$workflow_dir/pr-candidate.yml" "$preview"
@@ -324,7 +385,7 @@ $python_line$binary_line$helm_line$chart_line
 $platforms_line
 $cache_line
       merge-method: $merge_method
-      require-approval: true
+      required-approvals: "$required_approvals"
     secrets: inherit
 EOF
 )

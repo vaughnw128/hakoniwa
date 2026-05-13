@@ -118,6 +118,9 @@ on:
       chart_version:
         description: "Preview chart version."
         value: ${{ jobs.meta.outputs.chart_version }}
+      chart_url:
+        description: "Preview chart OCI reference without version."
+        value: ${{ jobs.meta.outputs.chart_url }}
 
 permissions:
   contents: read
@@ -139,6 +142,7 @@ jobs:
       chart_name: ${{ steps.compute.outputs.chart_name }}
       chart_registry: ${{ steps.compute.outputs.chart_registry }}
       chart_version: ${{ steps.compute.outputs.chart_version }}
+      chart_url: ${{ steps.compute.outputs.chart_url }}
     steps:
       - id: compute
         shell: bash
@@ -165,6 +169,7 @@ jobs:
 
           chart_registry="${{ inputs.chart-registry }}"
           [ -z "$chart_registry" ] && chart_registry="oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
+          chart_url="${chart_registry%/}/${chart_name}"
 
           if [ "$kind" = "pr" ] && [ -n "$id" ]; then
             chart_version="0.0.0-pr.${id}.${GITHUB_RUN_NUMBER}"
@@ -182,6 +187,7 @@ jobs:
             echo "chart_name=${chart_name}"
             echo "chart_registry=${chart_registry}"
             echo "chart_version=${chart_version}"
+            echo "chart_url=${chart_url}"
           } >> "$GITHUB_OUTPUT"
 
   validate:
