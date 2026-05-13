@@ -21,6 +21,7 @@ Options:
   --release-command TEXT  Release command prefix. Default: euclid release.
   --merge-method METHOD   merge, squash, or rebase. Default: squash.
   --no-pr-check           Do not write verify-pr.yml.
+  --no-security           Do not write security.yml.
   --no-help               Do not write pr-help.yml.
   --no-preview            Do not write pr-candidate.yml.
   --no-release            Do not write pr-release.yml.
@@ -44,6 +45,7 @@ write_help=1
 write_preview=1
 write_release=1
 write_pr_check=1
+write_security=1
 force=0
 
 while [[ $# -gt 0 ]]; do
@@ -60,6 +62,7 @@ while [[ $# -gt 0 ]]; do
     --release-command) release_command="${2:?missing value for --release-command}"; shift 2 ;;
     --merge-method) merge_method="${2:?missing value for --merge-method}"; shift 2 ;;
     --no-pr-check) write_pr_check=0; shift ;;
+    --no-security) write_security=0; shift ;;
     --no-help) write_help=0; shift ;;
     --no-preview) write_preview=0; shift ;;
     --no-release) write_release=0; shift ;;
@@ -117,6 +120,11 @@ binary_line="$(yaml_line "binary-name" "$binary_name")"
 helm_line="$(yaml_line "helm-path" "$helm_path")"
 chart_line="$(yaml_line "chart-name" "$chart_name")"
 cache_line="$(yaml_line "cache-ref" "$cache_ref")"
+case "$language" in
+  python) codeql_languages='["python"]' ;;
+  go) codeql_languages='["go"]' ;;
+  *) codeql_languages="" ;;
+esac
 
 verify=$(cat <<EOF
 name: Verify
@@ -154,6 +162,34 @@ jobs:
 EOF
 )
   write_workflow "$workflow_dir/verify-pr.yml" "$pr_check"
+fi
+
+if [[ "$write_security" -eq 1 ]]; then
+  security=$(cat <<EOF
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 8 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  scan:
+    uses: $hakoniwa/code-scanning.yml@$workflow_ref
+    with:
+      language: $language
+      codeql-languages: '$codeql_languages'
+    secrets: inherit
+EOF
+)
+  write_workflow "$workflow_dir/security.yml" "$security"
 fi
 
 if [[ "$write_help" -eq 1 ]]; then
@@ -200,6 +236,7 @@ permissions:
   issues: write
   packages: write
   pull-requests: read
+  security-events: write
 
 jobs:
   prepare:
@@ -249,6 +286,7 @@ permissions:
   packages: write
   checks: read
   actions: read
+  security-events: write
 
 jobs:
   release:

@@ -72,6 +72,8 @@ jobs:
             **/uv.lock
             **/*.py.lock
           cache-suffix: quality
+          cache-python: true
+          ignore-nothing-to-cache: true
 
       - name: Install uv with explicit Python
         if: inputs.language == 'python' && inputs.python-version != ''
@@ -84,16 +86,16 @@ jobs:
             **/uv.lock
             **/*.py.lock
           cache-suffix: quality
+          cache-python: true
+          ignore-nothing-to-cache: true
 
       - name: Ruff format check
         if: inputs.language == 'python'
-        uses: astral-sh/ruff-action@v3
-        with:
-          args: "format --check"
+        run: uvx ruff format --check
 
       - name: Ruff lint
         if: inputs.language == 'python'
-        uses: astral-sh/ruff-action@v3
+        run: uvx ruff check
 
       - name: Setup Rust toolchain
         if: inputs.language == 'rust'
@@ -199,6 +201,8 @@ jobs:
             **/uv.lock
             **/*.py.lock
           cache-suffix: tests
+          cache-python: true
+          ignore-nothing-to-cache: true
 
       - name: Install uv with explicit Python
         if: inputs.language == 'python' && inputs.python-version != ''
@@ -211,6 +215,8 @@ jobs:
             **/uv.lock
             **/*.py.lock
           cache-suffix: tests
+          cache-python: true
+          ignore-nothing-to-cache: true
 
       - name: Sync Python dependencies
         if: inputs.language == 'python'

@@ -83,6 +83,22 @@ on:
         description: "Run verify.yml for the candidate ref before building."
         type: boolean
         default: true
+      skip-image-scan:
+        description: "Skip Grype scan of the built candidate image."
+        type: boolean
+        default: false
+      image-scan-fail-build:
+        description: "Fail the build when Grype finds image vulnerabilities at or above the severity cutoff. Defaults to advisory for PR candidates."
+        type: boolean
+        default: false
+      image-scan-severity-cutoff:
+        description: "Minimum Grype image vulnerability severity that fails the build."
+        type: string
+        default: "critical"
+      image-scan-only-fixed:
+        description: "Only fail/report image vulnerabilities that have a fix available."
+        type: boolean
+        default: false
     outputs:
       image:
         description: "Immutable candidate image reference."
@@ -107,6 +123,7 @@ permissions:
   contents: read
   checks: read
   packages: write
+  security-events: write
 
 jobs:
   meta:
@@ -277,10 +294,36 @@ jobs:
         ${{ inputs.language == 'rust' && format('dist/linux/arm64/{0}', inputs.binary-name) || '' }}
     secrets: inherit
 
+  image-scan:
+    name: Grype Candidate Image Scan
+    needs: [meta, container]
+    if: ${{ always() && needs.container.result == 'success' && !inputs.skip-image-scan }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run Grype
+        id: grype
+        uses: anchore/scan-action@v7
+        with:
+          image: ${{ needs.meta.outputs.image_repo }}@${{ needs.container.outputs.digest }}
+          registry-username: ${{ github.repository_owner }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          fail-build: ${{ inputs.image-scan-fail-build }}
+          severity-cutoff: ${{ inputs.image-scan-severity-cutoff }}
+          only-fixed: ${{ inputs.image-scan-only-fixed }}
+          output-format: sarif
+          cache-db: true
+
+      - name: Upload Grype results to GitHub Security
+        if: always() && steps.grype.outputs.sarif != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+          category: grype-image
+
   chart:
     name: Package Candidate Chart
-    needs: [meta, container]
-    if: ${{ always() && needs.container.result == 'success' && inputs.helm-path != '' }}
+    needs: [meta, container, image-scan]
+    if: ${{ always() && needs.container.result == 'success' && (inputs.skip-image-scan || needs.image-scan.result == 'success') && inputs.helm-path != '' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

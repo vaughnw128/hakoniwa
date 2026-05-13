@@ -75,6 +75,22 @@ on:
         description: "Whether to allow release commands for fork PRs."
         type: boolean
         default: false
+      skip-image-scan:
+        description: "Skip Grype scan of the release candidate image."
+        type: boolean
+        default: false
+      image-scan-fail-build:
+        description: "Fail the release when Grype finds image vulnerabilities at or above the severity cutoff."
+        type: boolean
+        default: true
+      image-scan-severity-cutoff:
+        description: "Minimum Grype image vulnerability severity that fails the release."
+        type: string
+        default: "high"
+      image-scan-only-fixed:
+        description: "Only fail/report image vulnerabilities that have a fix available."
+        type: boolean
+        default: false
     outputs:
       version:
         description: "Released version without leading v."
@@ -93,6 +109,7 @@ permissions:
   packages: write
   checks: read
   actions: read
+  security-events: write
 
 jobs:
   parse:
@@ -329,6 +346,10 @@ jobs:
       build-args: ${{ inputs.build-args }}
       platforms: ${{ inputs.platforms }}
       cache-ref: ${{ inputs.cache-ref }}
+      skip-image-scan: ${{ inputs.skip-image-scan }}
+      image-scan-fail-build: ${{ inputs.image-scan-fail-build }}
+      image-scan-severity-cutoff: ${{ inputs.image-scan-severity-cutoff }}
+      image-scan-only-fixed: ${{ inputs.image-scan-only-fixed }}
       helm-path: ""
       require-verify: false
     secrets: inherit

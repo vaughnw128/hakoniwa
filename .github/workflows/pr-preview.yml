@@ -73,6 +73,7 @@ permissions:
   issues: write
   packages: write
   pull-requests: write
+  security-events: write
 
 jobs:
   announce:
