@@ -307,9 +307,12 @@ $cache_line
     needs: prepare
     if: \${{ needs.prepare.outputs.should_run == 'true' }}
     runs-on: ubuntu-latest
+    outputs:
+      check_id: \${{ steps.start.outputs.check_id }}
     permissions:
       contents: read
       issues: write
+      checks: write
     steps:
       - name: Get app token
         uses: actions/create-github-app-token@v2
@@ -319,12 +322,33 @@ $cache_line
           private-key: \${{ secrets.PRIVATE_KEY }}
 
       - name: Comment candidate start
+        id: start
         uses: actions/github-script@v8
         with:
           github-token: \${{ steps.app-token.outputs.token }}
           script: |
             const sha = "\${{ needs.prepare.outputs.head_sha }}".slice(0, 7);
             const runUrl = \`https://github.com/\${context.repo.owner}/\${context.repo.repo}/actions/runs/\${context.runId}\`;
+            let checkRunId = "";
+            try {
+              const check = await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: "Hakoniwa PR Candidate",
+                head_sha: "\${{ needs.prepare.outputs.head_sha }}",
+                status: "in_progress",
+                started_at: new Date().toISOString(),
+                details_url: runUrl,
+                output: {
+                  title: "PR candidate build started",
+                  summary: "Building a deployable PR candidate image and chart.",
+                },
+              });
+              checkRunId = String(check.data.id);
+            } catch (error) {
+              core.warning(\`Could not create PR candidate check run: \${error.message}\`);
+            }
+            core.setOutput("check_id", checkRunId);
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -339,12 +363,13 @@ $cache_line
 
   notify:
     name: Notify PR Candidate
-    needs: [prepare, candidate]
+    needs: [prepare, announce, candidate]
     if: \${{ always() && needs.prepare.outputs.should_run == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       issues: write
+      checks: write
     steps:
       - name: Get app token
         uses: actions/create-github-app-token@v2
@@ -360,6 +385,7 @@ $cache_line
           script: |
             const ok = "\${{ needs.candidate.result }}" === "success";
             const runUrl = \`https://github.com/\${context.repo.owner}/\${context.repo.repo}/actions/runs/\${context.runId}\`;
+            const checkRunId = Number("\${{ needs.announce.outputs.check_id }}");
             const lines = ok
               ? [
                   "PR candidate build succeeded.",
@@ -380,6 +406,26 @@ $cache_line
             if (ok && "$helm_path" !== "") {
               lines.push("- Chart URL: \`\${{ needs.candidate.outputs.chart_url }}\`");
               lines.push("- Chart version: \`\${{ needs.candidate.outputs.chart_version }}\`");
+            }
+
+            if (checkRunId) {
+              try {
+                await github.rest.checks.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  check_run_id: checkRunId,
+                  status: "completed",
+                  conclusion: ok ? "success" : "failure",
+                  completed_at: new Date().toISOString(),
+                  details_url: runUrl,
+                  output: {
+                    title: ok ? "PR candidate build succeeded" : "PR candidate build failed",
+                    summary: lines.join("\\n"),
+                  },
+                });
+              } catch (error) {
+                core.warning(\`Could not update PR candidate check run: \${error.message}\`);
+              }
             }
 
             await github.rest.issues.createComment({
@@ -416,7 +462,7 @@ jobs:
       pull-requests: write
       issues: write
       packages: write
-      checks: read
+      checks: write
       actions: read
       security-events: write
     uses: $hakoniwa/release-command.yml@$workflow_ref

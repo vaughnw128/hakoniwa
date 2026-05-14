@@ -72,7 +72,7 @@ on:
 
 permissions:
   contents: read
-  checks: read
+  checks: write
   issues: write
   packages: write
   pull-requests: write
@@ -82,6 +82,8 @@ jobs:
   announce:
     name: Announce Preview Start
     runs-on: ubuntu-latest
+    outputs:
+      check_id: ${{ steps.start.outputs.check_id }}
     steps:
       - name: Get app token
         uses: actions/create-github-app-token@v2
@@ -91,11 +93,33 @@ jobs:
           private-key: ${{ secrets.PRIVATE_KEY }}
 
       - name: Comment preview start
+        id: start
         uses: actions/github-script@v8
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const sha = "${{ inputs.head-sha }}".slice(0, 7);
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            let checkRunId = "";
+            try {
+              const check = await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: "Hakoniwa PR Preview",
+                head_sha: "${{ inputs.head-sha }}",
+                status: "in_progress",
+                started_at: new Date().toISOString(),
+                details_url: runUrl,
+                output: {
+                  title: "Preview build started",
+                  summary: `Building preview candidate for PR #${{ inputs.pr-number }}.`,
+                },
+              });
+              checkRunId = String(check.data.id);
+            } catch (error) {
+              core.warning(`Could not create PR preview check run: ${error.message}`);
+            }
+            core.setOutput("check_id", checkRunId);
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -104,7 +128,7 @@ jobs:
                 "Preview build started.",
                 "",
                 "- Commit: `" + sha + "`",
-                `- Run: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                "- Run: " + runUrl,
               ].join("\n"),
             });
 
@@ -133,7 +157,7 @@ jobs:
 
   notify:
     name: Notify Result
-    needs: candidate
+    needs: [announce, candidate]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
@@ -152,6 +176,7 @@ jobs:
             const sha = "${{ inputs.head-sha }}".slice(0, 7);
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const ok = "${{ needs.candidate.result }}" === "success";
+            const checkRunId = Number("${{ needs.announce.outputs.check_id }}");
             const lines = ok
               ? [
                   "Preview build is ready.",
@@ -172,6 +197,26 @@ jobs:
             if (ok && "${{ inputs.helm-path }}" !== "") {
               lines.push("- Chart URL: `${{ needs.candidate.outputs.chart_url }}`");
               lines.push("- Chart version: `${{ needs.candidate.outputs.chart_version }}`");
+            }
+
+            if (checkRunId) {
+              try {
+                await github.rest.checks.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  check_run_id: checkRunId,
+                  status: "completed",
+                  conclusion: ok ? "success" : "failure",
+                  completed_at: new Date().toISOString(),
+                  details_url: runUrl,
+                  output: {
+                    title: ok ? "Preview build succeeded" : "Preview build failed",
+                    summary: lines.join("\n"),
+                  },
+                });
+              } catch (error) {
+                core.warning(`Could not update PR preview check run: ${error.message}`);
+              }
             }
 
             await github.rest.issues.createComment({

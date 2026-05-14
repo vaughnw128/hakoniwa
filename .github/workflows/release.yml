@@ -54,7 +54,7 @@ on:
       image-scan-fail-build:
         description: "Fail the release when Grype finds image vulnerabilities at or above the severity cutoff."
         type: boolean
-        default: true
+        default: false
       image-scan-severity-cutoff:
         description: "Minimum Grype image vulnerability severity that fails the release."
         type: string

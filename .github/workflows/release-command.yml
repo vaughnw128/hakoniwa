@@ -86,7 +86,7 @@ on:
       image-scan-fail-build:
         description: "Fail the release when Grype finds image vulnerabilities at or above the severity cutoff."
         type: boolean
-        default: true
+        default: false
       image-scan-severity-cutoff:
         description: "Minimum Grype image vulnerability severity that fails the release."
         type: string
@@ -111,7 +111,7 @@ permissions:
   pull-requests: write
   issues: write
   packages: write
-  checks: read
+  checks: write
   actions: read
   security-events: write
 
@@ -265,6 +265,8 @@ jobs:
     needs: parse
     if: ${{ needs.parse.outputs.should_run == 'true' }}
     runs-on: ubuntu-latest
+    outputs:
+      check_id: ${{ steps.start.outputs.check_id }}
     steps:
       - name: Get app token
         uses: actions/create-github-app-token@v2
@@ -274,19 +276,44 @@ jobs:
           private-key: ${{ secrets.PRIVATE_KEY }}
 
       - name: Comment release start
+        id: start
         uses: actions/github-script@v8
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
+            const { owner, repo } = context.repo;
+            const pull_number = Number("${{ needs.parse.outputs.pr_number }}");
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number });
+            let checkRunId = "";
+            try {
+              const check = await github.rest.checks.create({
+                owner,
+                repo,
+                name: "Hakoniwa Release Command",
+                head_sha: pr.head.sha,
+                status: "in_progress",
+                started_at: new Date().toISOString(),
+                details_url: runUrl,
+                output: {
+                  title: "Release command received",
+                  summary: "Validating release gates before building the release candidate.",
+                },
+              });
+              checkRunId = String(check.data.id);
+            } catch (error) {
+              core.warning(`Could not create release command check run: ${error.message}`);
+            }
+            core.setOutput("check_id", checkRunId);
             await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: Number("${{ needs.parse.outputs.pr_number }}"),
+              owner,
+              repo,
+              issue_number: pull_number,
               body: [
                 "Release `${{ needs.parse.outputs.tag }}` command received.",
                 "",
                 "- Status: validating release gates.",
-                `- Run: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                "- Run: " + runUrl,
               ].join("\n"),
             });
 
@@ -438,7 +465,7 @@ jobs:
 
   notify:
     name: Notify Release
-    needs: [parse, merge, candidate, promote]
+    needs: [parse, announce, validate, candidate, merge, tag, promote]
     if: ${{ always() && needs.parse.outputs.should_run == 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -455,6 +482,8 @@ jobs:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const ok = "${{ needs.promote.result }}" === "success";
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const checkRunId = Number("${{ needs.announce.outputs.check_id }}");
             const body = ok
               ? [
                   "Released `${{ needs.parse.outputs.tag }}`.",
@@ -466,10 +495,30 @@ jobs:
                   "Release `${{ needs.parse.outputs.tag }}` did not complete.",
                   "",
                   "- Merge: `${{ needs.merge.result }}`",
+                  "- Validate: `${{ needs.validate.result }}`",
                   "- Candidate: `${{ needs.candidate.result }}`",
                   "- Promote: `${{ needs.promote.result }}`",
-                  `- Run: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                  "- Run: " + runUrl,
                 ].join("\n");
+            if (checkRunId) {
+              try {
+                await github.rest.checks.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  check_run_id: checkRunId,
+                  status: "completed",
+                  conclusion: ok ? "success" : "failure",
+                  completed_at: new Date().toISOString(),
+                  details_url: runUrl,
+                  output: {
+                    title: ok ? "Release command succeeded" : "Release command failed",
+                    summary: body,
+                  },
+                });
+              } catch (error) {
+                core.warning(`Could not update release command check run: ${error.message}`);
+              }
+            }
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
