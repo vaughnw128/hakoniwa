@@ -15,6 +15,10 @@ on:
         description: "GitHub author association for the comment author"
         type: string
         default: ""
+      comment-author-type:
+        description: "GitHub user type for the comment author, for example User or Bot"
+        type: string
+        default: ""
       command-prefix:
         description: "Comment prefix that should trigger the downstream workflow"
         type: string
@@ -58,14 +62,22 @@ jobs:
       - name: Resolve PR context
         id: prepare
         uses: actions/github-script@v8
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue-number }}
+          COMMENT_BODY: ${{ inputs.comment-body }}
+          COMMENT_AUTHOR_ASSOCIATION: ${{ inputs.comment-author-association }}
+          COMMENT_AUTHOR_TYPE: ${{ inputs.comment-author-type }}
+          COMMAND_PREFIX: ${{ inputs.command-prefix }}
+          ALLOW_FORKS: ${{ inputs.allow-forks }}
         with:
           script: |
             const { owner, repo } = context.repo;
-            const issueNumber = Number("${{ inputs.issue-number }}");
-            const commentBody = `${{ inputs.comment-body }}`.trim();
-            const association = `${{ inputs.comment-author-association }}`;
-            const commandPrefix = `${{ inputs.command-prefix }}`;
-            const allowForks = `${{ inputs.allow-forks }}` === "true";
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const commentBody = (process.env.COMMENT_BODY || "").trim();
+            const association = process.env.COMMENT_AUTHOR_ASSOCIATION || "";
+            const authorType = process.env.COMMENT_AUTHOR_TYPE || "";
+            const commandPrefix = process.env.COMMAND_PREFIX || "";
+            const allowForks = process.env.ALLOW_FORKS === "true";
             const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 
             core.setOutput("should_run", "false");
@@ -76,6 +88,11 @@ jobs:
 
             if (!commentBody.startsWith(commandPrefix)) {
               core.info(`Comment does not start with '${commandPrefix}', skipping.`);
+              return;
+            }
+
+            if (authorType === "Bot") {
+              core.info("Bot-authored comments are not allowed to trigger PR commands, skipping.");
               return;
             }
 

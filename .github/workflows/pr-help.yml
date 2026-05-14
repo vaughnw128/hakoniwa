@@ -47,17 +47,23 @@ jobs:
 
       - name: Create or update help comment
         uses: actions/github-script@v8
+        env:
+          PREVIEW_COMMAND: ${{ inputs.preview-command }}
+          RELEASE_COMMAND: ${{ inputs.release-command }}
+          INCLUDE_RELEASE: ${{ inputs.include-release }}
+          REQUIRED_APPROVALS: ${{ inputs.required-approvals }}
+          EXTRA_NOTES: ${{ inputs.extra-notes }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const { owner, repo } = context.repo;
             const issue_number = Number("${{ inputs.pr-number }}");
             const marker = "<!-- hakoniwa:pr-help -->";
-            const previewCommand = `${{ inputs.preview-command }}`;
-            const releaseCommand = `${{ inputs.release-command }}`;
-            const includeRelease = `${{ inputs.include-release }}` === "true";
-            const requiredApprovals = `${{ inputs.required-approvals }}`.trim();
-            const extraNotes = `${{ inputs.extra-notes }}`.trim();
+            const previewCommand = process.env.PREVIEW_COMMAND || "";
+            const releaseCommand = process.env.RELEASE_COMMAND || "";
+            const includeRelease = process.env.INCLUDE_RELEASE === "true";
+            const requiredApprovals = (process.env.REQUIRED_APPROVALS || "").trim();
+            const extraNotes = (process.env.EXTRA_NOTES || "").trim();
 
             const lines = [
               marker,

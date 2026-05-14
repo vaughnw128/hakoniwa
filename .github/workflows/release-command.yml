@@ -15,6 +15,10 @@ on:
         description: "GitHub author association for the comment author."
         type: string
         default: ""
+      comment-author-type:
+        description: "GitHub user type for the comment author, for example User or Bot."
+        type: string
+        default: ""
       command-prefix:
         description: "Comment prefix used to request a release."
         type: string
@@ -127,11 +131,17 @@ jobs:
     steps:
       - id: parse
         uses: actions/github-script@v8
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue-number }}
+          COMMENT_BODY: ${{ inputs.comment-body }}
+          COMMENT_AUTHOR_TYPE: ${{ inputs.comment-author-type }}
+          COMMAND_PREFIX: ${{ inputs.command-prefix }}
         with:
           script: |
-            const body = `${{ inputs.comment-body }}`.trim();
-            const prefix = `${{ inputs.command-prefix }}`.trim();
-            const issueNumber = Number("${{ inputs.issue-number }}");
+            const body = (process.env.COMMENT_BODY || "").trim();
+            const prefix = (process.env.COMMAND_PREFIX || "").trim();
+            const authorType = process.env.COMMENT_AUTHOR_TYPE || "";
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
             core.setOutput("should_run", "false");
             core.setOutput("version", "");
             core.setOutput("tag", "");
@@ -139,6 +149,11 @@ jobs:
 
             if (!body.startsWith(prefix)) {
               core.info(`Comment does not start with '${prefix}', skipping.`);
+              return;
+            }
+
+            if (authorType === "Bot") {
+              core.info("Bot-authored comments are not allowed to trigger release commands, skipping.");
               return;
             }
 
@@ -320,7 +335,7 @@ jobs:
   merge:
     name: Merge Pull Request
     needs: [parse, validate, candidate]
-    if: ${{ needs.parse.outputs.should_run == 'true' }}
+    if: ${{ always() && needs.parse.outputs.should_run == 'true' && needs.validate.result == 'success' && needs.candidate.result == 'success' }}
     runs-on: ubuntu-latest
     outputs:
       merged_sha: ${{ steps.merge.outputs.merged_sha }}
@@ -428,7 +443,7 @@ jobs:
   tag:
     name: Create Release Tag
     needs: [parse, merge, candidate]
-    if: ${{ needs.parse.outputs.should_run == 'true' }}
+    if: ${{ always() && needs.parse.outputs.should_run == 'true' && needs.merge.result == 'success' && needs.candidate.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Get app token
@@ -452,7 +467,7 @@ jobs:
 
   promote:
     needs: [parse, merge, candidate, tag]
-    if: ${{ needs.parse.outputs.should_run == 'true' }}
+    if: ${{ always() && needs.parse.outputs.should_run == 'true' && needs.merge.result == 'success' && needs.candidate.result == 'success' && needs.tag.result == 'success' }}
     uses: vaughnw128/hakoniwa/.github/workflows/promote.yml@main
     with:
       version: ${{ needs.parse.outputs.version }}
@@ -497,6 +512,7 @@ jobs:
                   "- Merge: `${{ needs.merge.result }}`",
                   "- Validate: `${{ needs.validate.result }}`",
                   "- Candidate: `${{ needs.candidate.result }}`",
+                  "- Tag: `${{ needs.tag.result }}`",
                   "- Promote: `${{ needs.promote.result }}`",
                   "- Run: " + runUrl,
                 ].join("\n");

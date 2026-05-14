@@ -269,7 +269,7 @@ permissions:
 
 jobs:
   prepare:
-    if: \${{ github.event.issue.pull_request }}
+    if: \${{ github.event.issue.pull_request && github.event.comment.user.type != 'Bot' }}
     permissions:
       contents: read
       issues: write
@@ -279,6 +279,7 @@ jobs:
       issue-number: \${{ github.event.issue.number }}
       comment-body: \${{ github.event.comment.body || '' }}
       comment-author-association: \${{ github.event.comment.author_association || '' }}
+      comment-author-type: \${{ github.event.comment.user.type || '' }}
       command-prefix: $preview_command
       allow-forks: false
     secrets: inherit
@@ -456,7 +457,7 @@ permissions:
 
 jobs:
   release:
-    if: \${{ github.event.issue.pull_request }}
+    if: \${{ github.event.issue.pull_request && github.event.comment.user.type != 'Bot' }}
     permissions:
       contents: write
       pull-requests: write
@@ -470,6 +471,7 @@ jobs:
       issue-number: \${{ github.event.issue.number }}
       comment-body: \${{ github.event.comment.body || '' }}
       comment-author-association: \${{ github.event.comment.author_association || '' }}
+      comment-author-type: \${{ github.event.comment.user.type || '' }}
       command-prefix: $release_command
       language: $language
 $python_line$binary_line$helm_line$chart_line
