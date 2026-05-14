@@ -1,0 +1,157 @@
+name: Dependency Age
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref or SHA to inspect. Defaults to the triggering SHA."
+        type: string
+        default: ""
+      max-age-days:
+        description: "Minimum allowed package age in days."
+        type: number
+        default: 7
+      check-python:
+        description: "Check uv.lock packages against PyPI upload times."
+        type: boolean
+        default: true
+      check-rust:
+        description: "Check Cargo.lock crates against crates.io publish times."
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-age:
+    name: Dependency Age
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref != '' && inputs.ref || github.sha }}
+
+      - name: Check locked package publish age
+        shell: bash
+        env:
+          MAX_AGE_DAYS: ${{ inputs.max-age-days }}
+          CHECK_PYTHON: ${{ inputs.check-python }}
+          CHECK_RUST: ${{ inputs.check-rust }}
+        run: |
+          python - <<'PY'
+          import datetime as dt
+          import json
+          import os
+          import sys
+          import time
+          import tomllib
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from pathlib import Path
+
+          max_age_days = int(os.environ["MAX_AGE_DAYS"])
+          check_python = os.environ["CHECK_PYTHON"] == "true"
+          check_rust = os.environ["CHECK_RUST"] == "true"
+          cutoff = dt.datetime.now(dt.UTC) - dt.timedelta(days=max_age_days)
+          violations = []
+          checked = 0
+          cache = {}
+
+          def fetch_json(url):
+            if url in cache:
+              return cache[url]
+            request = urllib.request.Request(url, headers={"User-Agent": "hakoniwa-dependency-age"})
+            for attempt in range(3):
+              try:
+                with urllib.request.urlopen(request, timeout=20) as response:
+                  payload = json.load(response)
+                  cache[url] = payload
+                  return payload
+              except urllib.error.HTTPError as error:
+                if error.code == 404:
+                  return None
+                if attempt == 2:
+                  raise
+              except urllib.error.URLError:
+                if attempt == 2:
+                  raise
+              time.sleep(2 ** attempt)
+            return None
+
+          def parse_time(value):
+            if not value:
+              return None
+            return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(dt.UTC)
+
+          def check_uv_lock(path):
+            global checked
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+            for package in data.get("package", []):
+              name = package.get("name")
+              version = package.get("version")
+              source = package.get("source", {})
+              if not name or not version:
+                continue
+              if isinstance(source, dict) and any(key in source for key in ("path", "editable", "virtual", "workspace")):
+                continue
+              url = f"https://pypi.org/pypi/{urllib.parse.quote(name)}/{urllib.parse.quote(version)}/json"
+              payload = fetch_json(url)
+              if not payload:
+                print(f"::warning file={path}::Could not find PyPI metadata for {name}=={version}; skipping age check")
+                continue
+              uploaded = [parse_time(item.get("upload_time_iso_8601")) for item in payload.get("urls", [])]
+              uploaded = [item for item in uploaded if item]
+              if not uploaded:
+                print(f"::warning file={path}::No PyPI upload timestamps for {name}=={version}; skipping age check")
+                continue
+              published_at = min(uploaded)
+              checked += 1
+              if published_at > cutoff:
+                violations.append((str(path), "pypi", name, version, published_at))
+
+          def check_cargo_lock(path):
+            global checked
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+            for package in data.get("package", []):
+              name = package.get("name")
+              version = package.get("version")
+              source = package.get("source", "")
+              if not name or not version:
+                continue
+              if source and "crates.io" not in source:
+                continue
+              if not source:
+                continue
+              url = f"https://crates.io/api/v1/crates/{urllib.parse.quote(name)}/{urllib.parse.quote(version)}"
+              payload = fetch_json(url)
+              if not payload or "version" not in payload:
+                print(f"::warning file={path}::Could not find crates.io metadata for {name} {version}; skipping age check")
+                continue
+              published_at = parse_time(payload["version"].get("created_at"))
+              if not published_at:
+                print(f"::warning file={path}::No crates.io publish timestamp for {name} {version}; skipping age check")
+                continue
+              checked += 1
+              if published_at > cutoff:
+                violations.append((str(path), "crates.io", name, version, published_at))
+
+          if check_python:
+            for path in sorted(Path(".").rglob("uv.lock")):
+              check_uv_lock(path)
+
+          if check_rust:
+            for path in sorted(Path(".").rglob("Cargo.lock")):
+              check_cargo_lock(path)
+
+          if violations:
+            print(f"::error::Found {len(violations)} locked package(s) published in the last {max_age_days} day(s)")
+            for path, ecosystem, name, version, published_at in violations:
+              age = dt.datetime.now(dt.UTC) - published_at
+              print(f"::error file={path}::{ecosystem} package {name} {version} was published at {published_at.isoformat()} ({age.days} day(s) old)")
+            sys.exit(1)
+
+          print(f"Checked {checked} registry package version(s); none were newer than {max_age_days} day(s).")
+          PY

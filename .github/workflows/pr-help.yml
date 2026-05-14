@@ -76,7 +76,7 @@ jobs:
 
             if (includeRelease) {
               lines.push(
-                `- \`${releaseCommand} v1.2.3\` - merge this PR through the bot, verify the protected-branch commit, tag it, promote the tested image digest, publish the chart, and create the GitHub Release.`
+                `- \`${releaseCommand} v1.2.3\` - merge this PR through the bot, tag it, promote the latest successful PR candidate digest for the current commit, publish the chart, and create the GitHub Release.`
               );
             }
 
@@ -86,6 +86,7 @@ jobs:
               "",
               "- Trusted commenter: owner, member, or collaborator.",
               "- Verify checks must already be passing for the PR head.",
+              `- \`${previewCommand}\` must have succeeded for the current PR commit.`,
               `- Required approvals: ${requiredApprovals || "configured by the release workflow"}.`,
               "- The requested version must be semantic, for example `v1.2.3`."
             );

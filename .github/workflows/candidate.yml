@@ -99,6 +99,10 @@ on:
         description: "Only fail/report image vulnerabilities that have a fix available."
         type: boolean
         default: false
+      dependency-min-age-days:
+        description: "Minimum package publish age required before building a candidate container."
+        type: number
+        default: 7
     outputs:
       image:
         description: "Immutable candidate image reference."
@@ -281,9 +285,19 @@ jobs:
       binary-name: ${{ inputs.binary-name }}
     secrets: inherit
 
-  build-rust-amd64:
+  dependency-age:
     needs: [validate, verify-gate, verify]
-    if: ${{ always() && inputs.language == 'rust' && contains(inputs.platforms, 'linux/amd64') && needs.validate.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
+    if: ${{ always() && needs.validate.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
+    uses: vaughnw128/hakoniwa/.github/workflows/dependency-age.yml@main
+    with:
+      ref: ${{ inputs.ref }}
+      max-age-days: ${{ inputs.dependency-min-age-days }}
+      check-python: ${{ inputs.language == 'python' }}
+      check-rust: ${{ inputs.language == 'rust' }}
+
+  build-rust-amd64:
+    needs: [validate, verify-gate, verify, dependency-age]
+    if: ${{ always() && inputs.language == 'rust' && contains(inputs.platforms, 'linux/amd64') && needs.validate.result == 'success' && needs.dependency-age.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
     uses: vaughnw128/hakoniwa/.github/workflows/build-rust-binary.yml@main
     with:
       binary-name: ${{ inputs.binary-name }}
@@ -291,8 +305,8 @@ jobs:
       target: x86_64-unknown-linux-gnu
 
   build-rust-arm64:
-    needs: [validate, verify-gate, verify]
-    if: ${{ always() && inputs.language == 'rust' && contains(inputs.platforms, 'linux/arm64') && needs.validate.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
+    needs: [validate, verify-gate, verify, dependency-age]
+    if: ${{ always() && inputs.language == 'rust' && contains(inputs.platforms, 'linux/arm64') && needs.validate.result == 'success' && needs.dependency-age.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
     uses: vaughnw128/hakoniwa/.github/workflows/build-rust-binary.yml@main
     with:
       binary-name: ${{ inputs.binary-name }}
@@ -301,8 +315,8 @@ jobs:
 
   container:
     name: Build Candidate Image
-    needs: [meta, validate, verify-gate, verify, build-rust-amd64, build-rust-arm64]
-    if: ${{ always() && needs.meta.result == 'success' && needs.validate.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') && (inputs.language != 'rust' || ((!contains(inputs.platforms, 'linux/amd64') || needs.build-rust-amd64.result == 'success') && (!contains(inputs.platforms, 'linux/arm64') || needs.build-rust-arm64.result == 'success'))) }}
+    needs: [meta, validate, verify-gate, verify, dependency-age, build-rust-amd64, build-rust-arm64]
+    if: ${{ always() && needs.meta.result == 'success' && needs.validate.result == 'success' && needs.dependency-age.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') && (inputs.language != 'rust' || ((!contains(inputs.platforms, 'linux/amd64') || needs.build-rust-amd64.result == 'success') && (!contains(inputs.platforms, 'linux/arm64') || needs.build-rust-arm64.result == 'success'))) }}
     uses: vaughnw128/hakoniwa/.github/workflows/container-build.yml@main
     with:
       ref: ${{ inputs.ref }}

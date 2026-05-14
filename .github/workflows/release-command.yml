@@ -177,17 +177,10 @@ jobs:
       head_sha: ${{ steps.validate.outputs.head_sha }}
       base_ref: ${{ steps.validate.outputs.base_ref }}
     steps:
-      - name: Get app token
-        uses: actions/create-github-app-token@v2
-        id: app-token
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.PRIVATE_KEY }}
-
       - id: validate
         uses: actions/github-script@v8
         with:
-          github-token: ${{ steps.app-token.outputs.token }}
+          github-token: ${{ github.token }}
           script: |
             const { owner, repo } = context.repo;
             const pull_number = Number("${{ needs.parse.outputs.pr_number }}");
@@ -266,13 +259,13 @@ jobs:
       - name: Comment validation start
         uses: actions/github-script@v8
         with:
-          github-token: ${{ steps.app-token.outputs.token }}
+          github-token: ${{ github.token }}
           script: |
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: Number("${{ needs.parse.outputs.pr_number }}"),
-              body: "Release `${{ needs.parse.outputs.tag }}` requested. Gate checks passed; building the release candidate before merge.",
+              body: "Release `${{ needs.parse.outputs.tag }}` requested. Gate checks passed; resolving the latest tested PR candidate before merge.",
             });
 
   announce:
@@ -312,7 +305,7 @@ jobs:
                 details_url: runUrl,
                 output: {
                   title: "Release command received",
-                  summary: "Validating release gates before building the release candidate.",
+                  summary: "Validating release gates before resolving the tested PR candidate.",
                 },
               });
               checkRunId = String(check.data.id);
@@ -334,8 +327,8 @@ jobs:
 
   merge:
     name: Merge Pull Request
-    needs: [parse, validate, candidate]
-    if: ${{ always() && needs.parse.outputs.should_run == 'true' && needs.validate.result == 'success' && needs.candidate.result == 'success' }}
+    needs: [parse, validate, resolve-candidate]
+    if: ${{ always() && needs.parse.outputs.should_run == 'true' && needs.validate.result == 'success' && needs.resolve-candidate.result == 'success' }}
     runs-on: ubuntu-latest
     outputs:
       merged_sha: ${{ steps.merge.outputs.merged_sha }}
@@ -416,34 +409,78 @@ jobs:
             core.setOutput("should_verify", missing.length ? "true" : "false");
             core.setOutput("verified", missing.length ? "false" : "true");
 
-  candidate:
+  resolve-candidate:
+    name: Resolve Tested PR Candidate
     needs: [parse, validate, verify-gate, verify]
     if: ${{ always() && needs.parse.outputs.should_run == 'true' && needs.validate.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
-    uses: vaughnw128/hakoniwa/.github/workflows/candidate.yml@main
-    with:
-      ref: ${{ needs.validate.outputs.head_sha }}
-      candidate-kind: release-candidate
-      candidate-id: ${{ needs.parse.outputs.version }}
-      language: ${{ inputs.language }}
-      python-version: ${{ inputs.python-version }}
-      binary-name: ${{ inputs.binary-name }}
-      dockerfile: ${{ inputs.dockerfile }}
-      build-context: ${{ inputs.build-context }}
-      build-args: ${{ inputs.build-args }}
-      platforms: ${{ inputs.platforms }}
-      cache-ref: ${{ inputs.cache-ref }}
-      skip-image-scan: ${{ inputs.skip-image-scan }}
-      image-scan-fail-build: ${{ inputs.image-scan-fail-build }}
-      image-scan-severity-cutoff: ${{ inputs.image-scan-severity-cutoff }}
-      image-scan-only-fixed: ${{ inputs.image-scan-only-fixed }}
-      helm-path: ""
-      require-verify: false
-    secrets: inherit
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.resolve.outputs.digest }}
+      image: ${{ steps.resolve.outputs.image }}
+      image_repo: ${{ steps.resolve.outputs.image_repo }}
+      image_tag: ${{ steps.resolve.outputs.image_tag }}
+      chart_url: ${{ steps.resolve.outputs.chart_url }}
+      chart_version: ${{ steps.resolve.outputs.chart_version }}
+      source_run_id: ${{ steps.resolve.outputs.source_run_id }}
+    steps:
+      - id: resolve
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const headSha = "${{ needs.validate.outputs.head_sha }}";
+            const requiresChart = "${{ inputs.helm-path }}" !== "";
+            const checkRuns = await github.paginate(github.rest.checks.listForRef, {
+              owner,
+              repo,
+              ref: headSha,
+              check_name: "Hakoniwa PR Candidate",
+              per_page: 100,
+            });
+            const candidates = checkRuns
+              .filter(run => run.name === "Hakoniwa PR Candidate" && run.status === "completed" && run.conclusion === "success")
+              .sort((a, b) => new Date(b.completed_at || b.started_at || 0) - new Date(a.completed_at || a.started_at || 0));
+
+            for (const run of candidates) {
+              const { data } = await github.rest.checks.get({ owner, repo, check_run_id: run.id });
+              const summary = data.output?.summary || "";
+              const match = summary.match(/<!--\s*hakoniwa:candidate\s+({[\s\S]*?})\s*-->/);
+              if (!match) continue;
+
+              let metadata;
+              try {
+                metadata = JSON.parse(match[1]);
+              } catch (error) {
+                core.warning(`Could not parse candidate metadata from check ${run.id}: ${error.message}`);
+                continue;
+              }
+
+              if (metadata.schema !== "hakoniwa.pr-candidate.v1") continue;
+              if (metadata.head_sha !== headSha) continue;
+              if (!metadata.digest || !metadata.digest.startsWith("sha256:")) continue;
+              if (requiresChart && (!metadata.chart_url || !metadata.chart_version)) {
+                core.warning(`Candidate check ${run.id} did not include published chart metadata.`);
+                continue;
+              }
+
+              core.setOutput("digest", metadata.digest);
+              core.setOutput("image", metadata.image || "");
+              core.setOutput("image_repo", metadata.image_repo || "");
+              core.setOutput("image_tag", metadata.image_tag || "");
+              core.setOutput("chart_url", metadata.chart_url || "");
+              core.setOutput("chart_version", metadata.chart_version || "");
+              core.setOutput("source_run_id", metadata.run_id || "");
+              core.info(`Resolved PR candidate digest ${metadata.digest} from check ${run.id}.`);
+              return;
+            }
+
+            const chartRequirement = requiresChart ? " and published chart metadata" : "";
+            core.setFailed(`No successful Hakoniwa PR Candidate check with reusable image digest${chartRequirement} was found for ${headSha}. Run the PR candidate build command on the latest PR commit, then retry release.`);
 
   tag:
     name: Create Release Tag
-    needs: [parse, merge, candidate]
-    if: ${{ always() && needs.parse.outputs.should_run == 'true' && needs.merge.result == 'success' && needs.candidate.result == 'success' }}
+    needs: [parse, merge, resolve-candidate]
+    if: ${{ always() && needs.parse.outputs.should_run == 'true' && needs.merge.result == 'success' && needs.resolve-candidate.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - name: Get app token
@@ -466,13 +503,13 @@ jobs:
             });
 
   promote:
-    needs: [parse, merge, candidate, tag]
-    if: ${{ always() && needs.parse.outputs.should_run == 'true' && needs.merge.result == 'success' && needs.candidate.result == 'success' && needs.tag.result == 'success' }}
+    needs: [parse, merge, resolve-candidate, tag]
+    if: ${{ always() && needs.parse.outputs.should_run == 'true' && needs.merge.result == 'success' && needs.resolve-candidate.result == 'success' && needs.tag.result == 'success' }}
     uses: vaughnw128/hakoniwa/.github/workflows/promote.yml@main
     with:
       version: ${{ needs.parse.outputs.version }}
       ref: ${{ needs.merge.outputs.merged_sha }}
-      image-digest: ${{ needs.candidate.outputs.digest }}
+      image-digest: ${{ needs.resolve-candidate.outputs.digest }}
       helm-path: ${{ inputs.helm-path }}
       chart-name: ${{ inputs.chart-name }}
       helm-registry: ${{ inputs.helm-registry }}
@@ -480,7 +517,7 @@ jobs:
 
   notify:
     name: Notify Release
-    needs: [parse, announce, validate, candidate, merge, tag, promote]
+    needs: [parse, announce, validate, resolve-candidate, merge, tag, promote]
     if: ${{ always() && needs.parse.outputs.should_run == 'true' }}
     runs-on: ubuntu-latest
     steps:
@@ -500,18 +537,27 @@ jobs:
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const checkRunId = Number("${{ needs.announce.outputs.check_id }}");
             const body = ok
-              ? [
+              ? (() => {
+                const lines = [
                   "Released `${{ needs.parse.outputs.tag }}`.",
                   "",
                   "- Commit: `${{ needs.merge.outputs.merged_sha }}`",
                   "- Image: `${{ needs.promote.outputs.image }}`",
-                ].join("\n")
+                  "- Candidate digest: `${{ needs.resolve-candidate.outputs.digest }}`",
+                  "- Candidate image tag: `${{ needs.resolve-candidate.outputs.image_tag }}`",
+                ];
+                const chartUrl = "${{ needs.resolve-candidate.outputs.chart_url }}";
+                const chartVersion = "${{ needs.resolve-candidate.outputs.chart_version }}";
+                if (chartUrl) lines.push("- Chart URL: `" + chartUrl + "`");
+                if (chartVersion) lines.push("- Chart version: `" + chartVersion + "`");
+                return lines.join("\n");
+              })()
               : [
                   "Release `${{ needs.parse.outputs.tag }}` did not complete.",
                   "",
                   "- Merge: `${{ needs.merge.result }}`",
                   "- Validate: `${{ needs.validate.result }}`",
-                  "- Candidate: `${{ needs.candidate.result }}`",
+                  "- Candidate: `${{ needs.resolve-candidate.result }}`",
                   "- Tag: `${{ needs.tag.result }}`",
                   "- Promote: `${{ needs.promote.result }}`",
                   "- Run: " + runUrl,

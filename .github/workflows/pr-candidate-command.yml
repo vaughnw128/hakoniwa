@@ -1,0 +1,240 @@
+name: PR Candidate Command
+
+on:
+  workflow_call:
+    inputs:
+      issue-number:
+        description: "Pull request number from the comment event."
+        type: string
+        required: true
+      comment-body:
+        description: "Raw comment body."
+        type: string
+        required: true
+      comment-author-association:
+        description: "GitHub author association for the comment author."
+        type: string
+        default: ""
+      comment-author-type:
+        description: "GitHub user type for the comment author, for example User or Bot."
+        type: string
+        default: ""
+      command-prefix:
+        description: "Command prefix used to request a PR candidate."
+        type: string
+        default: "euclid build"
+      allow-forks:
+        description: "Whether to allow PR candidate commands for fork PRs."
+        type: boolean
+        default: false
+      language:
+        description: "Primary language: rust, python, go, or none."
+        type: string
+        default: "none"
+      python-version:
+        description: "Python version (only used when language=python)."
+        type: string
+        default: ""
+      binary-name:
+        description: "Rust binary name (required when language=rust)."
+        type: string
+        default: ""
+      dockerfile:
+        description: "Path to Dockerfile."
+        type: string
+        default: "./Dockerfile"
+      build-context:
+        description: "Docker build context."
+        type: string
+        default: "."
+      build-args:
+        description: "Extra Docker build-args."
+        type: string
+        default: ""
+      platforms:
+        description: "Docker platforms."
+        type: string
+        default: "linux/amd64,linux/arm64"
+      cache-ref:
+        description: "BuildKit registry cache reference."
+        type: string
+        default: ""
+      helm-path:
+        description: "Path to Helm chart directory (empty to skip chart packaging)."
+        type: string
+        default: ""
+      chart-name:
+        description: "Helm chart package name (defaults to repository name)."
+        type: string
+        default: ""
+      dependency-min-age-days:
+        description: "Minimum package publish age required before building a candidate container."
+        type: number
+        default: 7
+
+permissions:
+  contents: read
+  checks: write
+  issues: write
+  packages: write
+  pull-requests: read
+  security-events: write
+
+jobs:
+  prepare:
+    if: ${{ inputs.comment-author-type != 'Bot' }}
+    uses: vaughnw128/hakoniwa/.github/workflows/pr-comment-prepare.yml@main
+    with:
+      issue-number: ${{ inputs.issue-number }}
+      comment-body: ${{ inputs.comment-body }}
+      comment-author-association: ${{ inputs.comment-author-association }}
+      comment-author-type: ${{ inputs.comment-author-type }}
+      command-prefix: ${{ inputs.command-prefix }}
+      allow-forks: ${{ inputs.allow-forks }}
+    secrets: inherit
+
+  candidate:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_run == 'true' }}
+    uses: vaughnw128/hakoniwa/.github/workflows/candidate.yml@main
+    with:
+      ref: ${{ needs.prepare.outputs.head_sha }}
+      candidate-kind: pr
+      candidate-id: ${{ needs.prepare.outputs.pr_number }}
+      language: ${{ inputs.language }}
+      python-version: ${{ inputs.python-version }}
+      binary-name: ${{ inputs.binary-name }}
+      dockerfile: ${{ inputs.dockerfile }}
+      build-context: ${{ inputs.build-context }}
+      build-args: ${{ inputs.build-args }}
+      platforms: ${{ inputs.platforms }}
+      cache-ref: ${{ inputs.cache-ref }}
+      helm-path: ${{ inputs.helm-path }}
+      chart-name: ${{ inputs.chart-name }}
+      dependency-min-age-days: ${{ inputs.dependency-min-age-days }}
+    secrets: inherit
+
+  announce:
+    name: Announce PR Candidate
+    needs: prepare
+    if: ${{ needs.prepare.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    outputs:
+      check_id: ${{ steps.start.outputs.check_id }}
+    steps:
+      - name: Comment candidate start
+        id: start
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const sha = "${{ needs.prepare.outputs.head_sha }}".slice(0, 7);
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            let checkRunId = "";
+            try {
+              const check = await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: "Hakoniwa PR Candidate",
+                head_sha: "${{ needs.prepare.outputs.head_sha }}",
+                status: "in_progress",
+                started_at: new Date().toISOString(),
+                details_url: runUrl,
+                output: {
+                  title: "PR candidate build started",
+                  summary: "Building a deployable PR candidate image and chart.",
+                },
+              });
+              checkRunId = String(check.data.id);
+            } catch (error) {
+              core.warning(`Could not create PR candidate check run: ${error.message}`);
+            }
+            core.setOutput("check_id", checkRunId);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number("${{ needs.prepare.outputs.pr_number }}"),
+              body: [
+                "PR candidate build started.",
+                "",
+                "- Commit: `" + sha + "`",
+                "- Run: " + runUrl,
+              ].join("\n"),
+            });
+
+  notify:
+    name: Notify PR Candidate
+    needs: [prepare, announce, candidate]
+    if: ${{ always() && needs.prepare.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment candidate result
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const ok = "${{ needs.candidate.result }}" === "success";
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const checkRunId = Number("${{ needs.announce.outputs.check_id }}");
+            const lines = ok
+              ? [
+                  "PR candidate build succeeded.",
+                  "",
+                  "- Image: `${{ needs.candidate.outputs.image }}`",
+                  "- Docker image tag: `${{ needs.candidate.outputs.image_tag }}`",
+                  "- Digest: `${{ needs.candidate.outputs.digest }}`",
+                  "- Run: " + runUrl,
+                ]
+              : [
+                  "PR candidate build failed.",
+                  "",
+                  "- Prepare: `${{ needs.prepare.result }}`",
+                  "- Candidate: `${{ needs.candidate.result }}`",
+                  "- Run: " + runUrl,
+                ];
+
+            if (ok && "${{ inputs.helm-path }}" !== "") {
+              lines.push("- Chart URL: `${{ needs.candidate.outputs.chart_url }}`");
+              lines.push("- Chart version: `${{ needs.candidate.outputs.chart_version }}`");
+            }
+            const metadata = ok ? {
+              schema: "hakoniwa.pr-candidate.v1",
+              head_sha: "${{ needs.prepare.outputs.head_sha }}",
+              image: "${{ needs.candidate.outputs.image }}",
+              image_repo: "${{ needs.candidate.outputs.image_repo }}",
+              image_tag: "${{ needs.candidate.outputs.image_tag }}",
+              digest: "${{ needs.candidate.outputs.digest }}",
+              chart_url: "${{ needs.candidate.outputs.chart_url }}",
+              chart_version: "${{ needs.candidate.outputs.chart_version }}",
+              run_id: String(context.runId),
+            } : null;
+            const summary = metadata
+              ? `${lines.join("\n")}\n\n<!-- hakoniwa:candidate ${JSON.stringify(metadata)} -->`
+              : lines.join("\n");
+
+            if (checkRunId) {
+              try {
+                await github.rest.checks.update({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  check_run_id: checkRunId,
+                  status: "completed",
+                  conclusion: ok ? "success" : "failure",
+                  completed_at: new Date().toISOString(),
+                  details_url: runUrl,
+                  output: {
+                    title: ok ? "PR candidate build succeeded" : "PR candidate build failed",
+                    summary,
+                  },
+                });
+              } catch (error) {
+                core.warning(`Could not update PR candidate check run: ${error.message}`);
+              }
+            }
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number("${{ needs.prepare.outputs.pr_number }}"),
+              body: lines.join("\n"),
+            });

@@ -35,6 +35,14 @@ on:
         description: "Comma-separated Checkov check IDs to skip"
         type: string
         default: ""
+      skip-dependency-age:
+        description: "Skip dependency publish-age checks."
+        type: boolean
+        default: false
+      dependency-min-age-days:
+        description: "Minimum allowed package age in days."
+        type: number
+        default: 7
 
 permissions:
   contents: read
@@ -113,3 +121,12 @@ jobs:
         with:
           sarif_file: checkov-results.sarif
           category: checkov
+
+  dependency-age:
+    name: Dependency Age
+    if: ${{ !inputs.skip-dependency-age && (inputs.language == 'python' || inputs.language == 'rust') }}
+    uses: vaughnw128/hakoniwa/.github/workflows/dependency-age.yml@main
+    with:
+      max-age-days: ${{ inputs.dependency-min-age-days }}
+      check-python: ${{ inputs.language == 'python' }}
+      check-rust: ${{ inputs.language == 'rust' }}

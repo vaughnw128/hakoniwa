@@ -17,6 +17,8 @@ Options:
   --chart-name NAME       Helm chart package name.
   --cache-ref REF         BuildKit registry cache ref for image builds.
   --platforms LIST        Docker platforms. Default: linux/amd64,linux/arm64.
+  --dependency-min-age-days N
+                         Minimum package publish age before candidate builds. Default: 7.
   --workflow-ref REF      Hakoniwa ref to use. Default: main.
   --preview-command TEXT  Preview command. Default: euclid build.
   --release-command TEXT  Release command prefix. Default: euclid release.
@@ -41,6 +43,7 @@ helm_path=""
 chart_name=""
 cache_ref=""
 platforms="linux/amd64,linux/arm64"
+dependency_min_age_days="7"
 workflow_ref="main"
 preview_command="euclid build"
 release_command="euclid release"
@@ -64,6 +67,7 @@ while [[ $# -gt 0 ]]; do
     --chart-name) chart_name="${2:?missing value for --chart-name}"; shift 2 ;;
     --cache-ref) cache_ref="${2:?missing value for --cache-ref}"; shift 2 ;;
     --platforms) platforms="${2:?missing value for --platforms}"; shift 2 ;;
+    --dependency-min-age-days) dependency_min_age_days="${2:?missing value for --dependency-min-age-days}"; shift 2 ;;
     --workflow-ref) workflow_ref="${2:?missing value for --workflow-ref}"; shift 2 ;;
     --preview-command) preview_command="${2:?missing value for --preview-command}"; shift 2 ;;
     --release-command) release_command="${2:?missing value for --release-command}"; shift 2 ;;
@@ -102,6 +106,11 @@ if [[ ! "$required_approvals" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
+if [[ ! "$dependency_min_age_days" =~ ^[0-9]+$ ]]; then
+  echo "--dependency-min-age-days must be a non-negative integer" >&2
+  exit 2
+fi
+
 repo="$(cd "$repo" && pwd)"
 workflow_dir="$repo/.github/workflows"
 hakoniwa="vaughnw128/hakoniwa/.github/workflows"
@@ -135,6 +144,7 @@ helm_line="$(yaml_line "helm-path" "$helm_path")"
 chart_line="$(yaml_line "chart-name" "$chart_name")"
 cache_line="$(yaml_line "cache-ref" "$cache_ref")"
 platforms_line="$(yaml_line "platforms" "$platforms")"
+dependency_age_line="$(yaml_line "dependency-min-age-days" "$dependency_min_age_days")"
 codeql_languages=""
 if [[ "$enable_codeql" -eq 1 ]]; then
   case "$language" in
@@ -217,6 +227,7 @@ jobs:
     with:
       language: $language
 $codeql_line
+$dependency_age_line
     secrets: inherit
 EOF
 )
@@ -268,13 +279,16 @@ permissions:
   contents: read
 
 jobs:
-  prepare:
+  candidate:
     if: \${{ github.event.issue.pull_request && github.event.comment.user.type != 'Bot' }}
     permissions:
       contents: read
       issues: write
+      checks: write
+      packages: write
       pull-requests: read
-    uses: $hakoniwa/pr-comment-prepare.yml@$workflow_ref
+      security-events: write
+    uses: $hakoniwa/pr-candidate-command.yml@$workflow_ref
     with:
       issue-number: \${{ github.event.issue.number }}
       comment-body: \${{ github.event.comment.body || '' }}
@@ -282,159 +296,12 @@ jobs:
       comment-author-type: \${{ github.event.comment.user.type || '' }}
       command-prefix: $preview_command
       allow-forks: false
-    secrets: inherit
-
-  candidate:
-    needs: prepare
-    if: \${{ needs.prepare.outputs.should_run == 'true' }}
-    permissions:
-      contents: read
-      checks: read
-      packages: write
-      security-events: write
-    uses: $hakoniwa/candidate.yml@$workflow_ref
-    with:
-      ref: \${{ needs.prepare.outputs.head_sha }}
-      candidate-kind: pr
-      candidate-id: \${{ needs.prepare.outputs.pr_number }}
       language: $language
 $python_line$binary_line$helm_line$chart_line
 $platforms_line
 $cache_line
+$dependency_age_line
     secrets: inherit
-
-  announce:
-    name: Announce PR Candidate
-    needs: prepare
-    if: \${{ needs.prepare.outputs.should_run == 'true' }}
-    runs-on: ubuntu-latest
-    outputs:
-      check_id: \${{ steps.start.outputs.check_id }}
-    permissions:
-      contents: read
-      issues: write
-      checks: write
-    steps:
-      - name: Get app token
-        uses: actions/create-github-app-token@v2
-        id: app-token
-        with:
-          app-id: \${{ vars.APP_ID }}
-          private-key: \${{ secrets.PRIVATE_KEY }}
-
-      - name: Comment candidate start
-        id: start
-        uses: actions/github-script@v8
-        with:
-          github-token: \${{ steps.app-token.outputs.token }}
-          script: |
-            const sha = "\${{ needs.prepare.outputs.head_sha }}".slice(0, 7);
-            const runUrl = \`https://github.com/\${context.repo.owner}/\${context.repo.repo}/actions/runs/\${context.runId}\`;
-            let checkRunId = "";
-            try {
-              const check = await github.rest.checks.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                name: "Hakoniwa PR Candidate",
-                head_sha: "\${{ needs.prepare.outputs.head_sha }}",
-                status: "in_progress",
-                started_at: new Date().toISOString(),
-                details_url: runUrl,
-                output: {
-                  title: "PR candidate build started",
-                  summary: "Building a deployable PR candidate image and chart.",
-                },
-              });
-              checkRunId = String(check.data.id);
-            } catch (error) {
-              core.warning(\`Could not create PR candidate check run: \${error.message}\`);
-            }
-            core.setOutput("check_id", checkRunId);
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: Number("\${{ needs.prepare.outputs.pr_number }}"),
-              body: [
-                "PR candidate build started.",
-                "",
-                "- Commit: \`" + sha + "\`",
-                "- Run: " + runUrl,
-              ].join("\\n"),
-            });
-
-  notify:
-    name: Notify PR Candidate
-    needs: [prepare, announce, candidate]
-    if: \${{ always() && needs.prepare.outputs.should_run == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-      checks: write
-    steps:
-      - name: Get app token
-        uses: actions/create-github-app-token@v2
-        id: app-token
-        with:
-          app-id: \${{ vars.APP_ID }}
-          private-key: \${{ secrets.PRIVATE_KEY }}
-
-      - name: Comment candidate result
-        uses: actions/github-script@v8
-        with:
-          github-token: \${{ steps.app-token.outputs.token }}
-          script: |
-            const ok = "\${{ needs.candidate.result }}" === "success";
-            const runUrl = \`https://github.com/\${context.repo.owner}/\${context.repo.repo}/actions/runs/\${context.runId}\`;
-            const checkRunId = Number("\${{ needs.announce.outputs.check_id }}");
-            const lines = ok
-              ? [
-                  "PR candidate build succeeded.",
-                  "",
-                  "- Image: \`\${{ needs.candidate.outputs.image }}\`",
-                  "- Docker image tag: \`\${{ needs.candidate.outputs.image_tag }}\`",
-                  "- Digest: \`\${{ needs.candidate.outputs.digest }}\`",
-                  "- Run: " + runUrl,
-                ]
-              : [
-                  "PR candidate build failed.",
-                  "",
-                  "- Prepare: \`\${{ needs.prepare.result }}\`",
-                  "- Candidate: \`\${{ needs.candidate.result }}\`",
-                  "- Run: " + runUrl,
-                ];
-
-            if (ok && "$helm_path" !== "") {
-              lines.push("- Chart URL: \`\${{ needs.candidate.outputs.chart_url }}\`");
-              lines.push("- Chart version: \`\${{ needs.candidate.outputs.chart_version }}\`");
-            }
-
-            if (checkRunId) {
-              try {
-                await github.rest.checks.update({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  check_run_id: checkRunId,
-                  status: "completed",
-                  conclusion: ok ? "success" : "failure",
-                  completed_at: new Date().toISOString(),
-                  details_url: runUrl,
-                  output: {
-                    title: ok ? "PR candidate build succeeded" : "PR candidate build failed",
-                    summary: lines.join("\\n"),
-                  },
-                });
-              } catch (error) {
-                core.warning(\`Could not update PR candidate check run: \${error.message}\`);
-              }
-            }
-
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: Number("\${{ needs.prepare.outputs.pr_number }}"),
-              body: lines.join("\\n"),
-            });
 EOF
 )
   write_workflow "$workflow_dir/pr-candidate.yml" "$preview"
