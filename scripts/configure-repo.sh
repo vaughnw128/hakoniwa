@@ -22,6 +22,7 @@ Options:
   --release-command TEXT  Release command prefix. Default: euclid release.
   --merge-method METHOD   merge, squash, or rebase. Default: squash.
   --required-approvals N  Current approving reviews required for release. Default: 1.
+  --enable-codeql         Generate an advanced CodeQL job. Leave off when GitHub CodeQL default setup is enabled.
   --no-pr-check           Do not write verify-pr.yml.
   --no-security           Do not write security.yml.
   --no-help               Do not write pr-help.yml.
@@ -45,6 +46,7 @@ preview_command="euclid build"
 release_command="euclid release"
 merge_method="squash"
 required_approvals="1"
+enable_codeql=0
 write_help=1
 write_preview=1
 write_release=1
@@ -67,6 +69,7 @@ while [[ $# -gt 0 ]]; do
     --release-command) release_command="${2:?missing value for --release-command}"; shift 2 ;;
     --merge-method) merge_method="${2:?missing value for --merge-method}"; shift 2 ;;
     --required-approvals) required_approvals="${2:?missing value for --required-approvals}"; shift 2 ;;
+    --enable-codeql) enable_codeql=1; shift ;;
     --no-pr-check) write_pr_check=0; shift ;;
     --no-security) write_security=0; shift ;;
     --no-help) write_help=0; shift ;;
@@ -132,11 +135,18 @@ helm_line="$(yaml_line "helm-path" "$helm_path")"
 chart_line="$(yaml_line "chart-name" "$chart_name")"
 cache_line="$(yaml_line "cache-ref" "$cache_ref")"
 platforms_line="$(yaml_line "platforms" "$platforms")"
-case "$language" in
-  python) codeql_languages='["python"]' ;;
-  go) codeql_languages='["go"]' ;;
-  *) codeql_languages="" ;;
-esac
+codeql_languages=""
+if [[ "$enable_codeql" -eq 1 ]]; then
+  case "$language" in
+    python) codeql_languages='["python"]' ;;
+    go) codeql_languages='["go"]' ;;
+    *) codeql_languages="" ;;
+  esac
+fi
+codeql_line=""
+if [[ -n "$codeql_languages" ]]; then
+  codeql_line="$(yaml_line "codeql-languages" "'$codeql_languages'")"
+fi
 
 verify=$(cat <<EOF
 name: Verify
@@ -206,7 +216,7 @@ jobs:
     uses: $hakoniwa/code-scanning.yml@$workflow_ref
     with:
       language: $language
-      codeql-languages: '$codeql_languages'
+$codeql_line
     secrets: inherit
 EOF
 )
@@ -291,6 +301,41 @@ $python_line$binary_line$helm_line$chart_line
 $platforms_line
 $cache_line
     secrets: inherit
+
+  announce:
+    name: Announce PR Candidate
+    needs: prepare
+    if: \${{ needs.prepare.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Get app token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: \${{ vars.APP_ID }}
+          private-key: \${{ secrets.PRIVATE_KEY }}
+
+      - name: Comment candidate start
+        uses: actions/github-script@v8
+        with:
+          github-token: \${{ steps.app-token.outputs.token }}
+          script: |
+            const sha = "\${{ needs.prepare.outputs.head_sha }}".slice(0, 7);
+            const runUrl = \`https://github.com/\${context.repo.owner}/\${context.repo.repo}/actions/runs/\${context.runId}\`;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number("\${{ needs.prepare.outputs.pr_number }}"),
+              body: [
+                "PR candidate build started.",
+                "",
+                "- Commit: \`" + sha + "\`",
+                "- Run: " + runUrl,
+              ].join("\\n"),
+            });
 
   notify:
     name: Notify PR Candidate

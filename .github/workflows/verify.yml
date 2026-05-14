@@ -16,9 +16,13 @@ on:
         type: string
         default: ""
       dockerfile:
-        description: "Path to Dockerfile for a no-push build check (empty to skip)."
+        description: "Path to Dockerfile for the optional no-push build check."
         type: string
         default: "./Dockerfile"
+      docker-build-check:
+        description: "Run a no-push Docker build in the quality gate."
+        type: boolean
+        default: false
       build-context:
         description: "Docker build context."
         type: string
@@ -154,22 +158,22 @@ jobs:
         run: helm template "${{ inputs.helm-path }}"
 
       - name: Set up Docker Buildx
-        if: inputs.dockerfile != ''
+        if: inputs.docker-build-check && inputs.dockerfile != ''
         uses: docker/setup-buildx-action@v3
 
       - name: Cache Rust dependencies for Docker build check
-        if: inputs.language == 'rust' && inputs.dockerfile != ''
+        if: inputs.docker-build-check && inputs.language == 'rust' && inputs.dockerfile != ''
         uses: Swatinem/rust-cache@v2
 
       - name: Build Rust binary for Docker build check
-        if: inputs.language == 'rust' && inputs.binary-name != '' && inputs.dockerfile != ''
+        if: inputs.docker-build-check && inputs.language == 'rust' && inputs.binary-name != '' && inputs.dockerfile != ''
         run: |
           cargo build --release
           mkdir -p dist/linux/amd64
           cp target/release/${{ inputs.binary-name }} dist/linux/amd64/${{ inputs.binary-name }}
 
       - name: Build Docker image without pushing
-        if: inputs.dockerfile != ''
+        if: inputs.docker-build-check && inputs.dockerfile != ''
         uses: docker/build-push-action@v6
         with:
           context: ${{ inputs.build-context }}

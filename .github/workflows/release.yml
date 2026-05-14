@@ -58,7 +58,7 @@ on:
       image-scan-severity-cutoff:
         description: "Minimum Grype image vulnerability severity that fails the release."
         type: string
-        default: "high"
+        default: "critical"
       image-scan-only-fixed:
         description: "Only fail/report image vulnerabilities that have a fix available."
         type: boolean

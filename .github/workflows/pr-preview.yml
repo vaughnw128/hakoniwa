@@ -100,7 +100,12 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: Number("${{ inputs.pr-number }}"),
-              body: `Preview build started.\n\n- Commit: \`${sha}\``,
+              body: [
+                "Preview build started.",
+                "",
+                "- Commit: `" + sha + "`",
+                `- Run: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ].join("\n"),
             });
 
   candidate:

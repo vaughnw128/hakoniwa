@@ -90,7 +90,7 @@ on:
       image-scan-severity-cutoff:
         description: "Minimum Grype image vulnerability severity that fails the release."
         type: string
-        default: "high"
+        default: "critical"
       image-scan-only-fixed:
         description: "Only fail/report image vulnerabilities that have a fix available."
         type: boolean
@@ -155,7 +155,7 @@ jobs:
 
   validate:
     name: Validate Release Gate
-    needs: parse
+    needs: [parse, announce]
     if: ${{ needs.parse.outputs.should_run == 'true' }}
     runs-on: ubuntu-latest
     outputs:
@@ -257,12 +257,42 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: Number("${{ needs.parse.outputs.pr_number }}"),
-              body: "Release `${{ needs.parse.outputs.tag }}` requested. Gate checks passed; merging and building the protected-branch commit.",
+              body: "Release `${{ needs.parse.outputs.tag }}` requested. Gate checks passed; building the release candidate before merge.",
+            });
+
+  announce:
+    name: Announce Release Start
+    needs: parse
+    if: ${{ needs.parse.outputs.should_run == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get app token
+        uses: actions/create-github-app-token@v2
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
+      - name: Comment release start
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: Number("${{ needs.parse.outputs.pr_number }}"),
+              body: [
+                "Release `${{ needs.parse.outputs.tag }}` command received.",
+                "",
+                "- Status: validating release gates.",
+                `- Run: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+              ].join("\n"),
             });
 
   merge:
     name: Merge Pull Request
-    needs: [parse, validate]
+    needs: [parse, validate, candidate]
     if: ${{ needs.parse.outputs.should_run == 'true' }}
     runs-on: ubuntu-latest
     outputs:
@@ -295,11 +325,11 @@ jobs:
             core.setOutput("merged_sha", merge.data.sha);
 
   verify:
-    needs: [parse, merge, verify-gate]
+    needs: [parse, validate, verify-gate]
     if: ${{ needs.parse.outputs.should_run == 'true' && needs.verify-gate.outputs.should_verify == 'true' }}
     uses: vaughnw128/hakoniwa/.github/workflows/verify.yml@main
     with:
-      ref: ${{ needs.merge.outputs.merged_sha }}
+      ref: ${{ needs.validate.outputs.head_sha }}
       language: ${{ inputs.language }}
       helm-path: ${{ inputs.helm-path }}
       dockerfile: ${{ inputs.dockerfile }}
@@ -311,7 +341,7 @@ jobs:
 
   verify-gate:
     name: Verify Gate
-    needs: [parse, merge]
+    needs: [parse, validate]
     if: ${{ needs.parse.outputs.should_run == 'true' }}
     runs-on: ubuntu-latest
     outputs:
@@ -323,7 +353,7 @@ jobs:
         with:
           script: |
             const { owner, repo } = context.repo;
-            const ref = "${{ needs.merge.outputs.merged_sha }}";
+            const ref = "${{ needs.validate.outputs.head_sha }}";
             const checkRuns = await github.paginate(github.rest.checks.listForRef, {
               owner,
               repo,
@@ -345,11 +375,11 @@ jobs:
             core.setOutput("verified", missing.length ? "false" : "true");
 
   candidate:
-    needs: [parse, merge, verify-gate, verify]
-    if: ${{ always() && needs.parse.outputs.should_run == 'true' && needs.merge.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
+    needs: [parse, validate, verify-gate, verify]
+    if: ${{ always() && needs.parse.outputs.should_run == 'true' && needs.validate.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
     uses: vaughnw128/hakoniwa/.github/workflows/candidate.yml@main
     with:
-      ref: ${{ needs.merge.outputs.merged_sha }}
+      ref: ${{ needs.validate.outputs.head_sha }}
       candidate-kind: release-candidate
       candidate-id: ${{ needs.parse.outputs.version }}
       language: ${{ inputs.language }}

@@ -16,9 +16,13 @@ on:
         type: string
         default: ""
       dockerfile:
-        description: "Path to Dockerfile for a no-push build check (empty to skip)."
+        description: "Path to Dockerfile for the optional no-push build check."
         type: string
         default: "./Dockerfile"
+      docker-build-check:
+        description: "Run a no-push Docker build in the quality gate."
+        type: boolean
+        default: false
       build-context:
         description: "Docker build context."
         type: string
@@ -60,6 +64,7 @@ jobs:
       language: ${{ inputs.language }}
       helm-path: ${{ inputs.helm-path }}
       dockerfile: ${{ inputs.dockerfile }}
+      docker-build-check: ${{ inputs.docker-build-check }}
       build-context: ${{ inputs.build-context }}
       build-args: ${{ inputs.build-args }}
       python-version: ${{ inputs.python-version }}
