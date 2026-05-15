@@ -27,6 +27,14 @@ on:
         description: "Whether to allow PRs from forks"
         type: boolean
         default: false
+      allowed-author-associations:
+        description: "Comma-separated GitHub author associations allowed to run the command."
+        type: string
+        default: "OWNER,MEMBER"
+      helm-path:
+        description: "Helm chart path used to classify chart-only changes."
+        type: string
+        default: ""
     outputs:
       should_run:
         description: "Whether the comment matched and the PR is eligible"
@@ -43,6 +51,15 @@ on:
       version:
         description: "Parsed release version without leading v, when present"
         value: ${{ jobs.prepare.outputs.version }}
+      docs_only:
+        description: "Whether all changed files are markdown files."
+        value: ${{ jobs.prepare.outputs.docs_only }}
+      chart_only:
+        description: "Whether all changed files are markdown files or under helm-path, with at least one chart file."
+        value: ${{ jobs.prepare.outputs.chart_only }}
+      runtime_changed:
+        description: "Whether the PR changes files outside markdown and helm-path."
+        value: ${{ jobs.prepare.outputs.runtime_changed }}
 
 permissions:
   contents: read
@@ -58,6 +75,9 @@ jobs:
       pr_number: ${{ steps.prepare.outputs.pr_number }}
       command: ${{ steps.prepare.outputs.command }}
       version: ${{ steps.prepare.outputs.version }}
+      docs_only: ${{ steps.prepare.outputs.docs_only }}
+      chart_only: ${{ steps.prepare.outputs.chart_only }}
+      runtime_changed: ${{ steps.prepare.outputs.runtime_changed }}
     steps:
       - name: Resolve PR context
         id: prepare
@@ -69,6 +89,8 @@ jobs:
           COMMENT_AUTHOR_TYPE: ${{ inputs.comment-author-type }}
           COMMAND_PREFIX: ${{ inputs.command-prefix }}
           ALLOW_FORKS: ${{ inputs.allow-forks }}
+          ALLOWED_AUTHOR_ASSOCIATIONS: ${{ inputs.allowed-author-associations }}
+          HELM_PATH: ${{ inputs.helm-path }}
         with:
           script: |
             const { owner, repo } = context.repo;
@@ -78,13 +100,21 @@ jobs:
             const authorType = process.env.COMMENT_AUTHOR_TYPE || "";
             const commandPrefix = process.env.COMMAND_PREFIX || "";
             const allowForks = process.env.ALLOW_FORKS === "true";
-            const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+            const trustedAssociations = new Set(
+              (process.env.ALLOWED_AUTHOR_ASSOCIATIONS || "OWNER,MEMBER")
+                .split(",")
+                .map(item => item.trim())
+                .filter(Boolean)
+            );
 
             core.setOutput("should_run", "false");
             core.setOutput("head_sha", "");
             core.setOutput("pr_number", `${issueNumber}`);
             core.setOutput("command", "");
             core.setOutput("version", "");
+            core.setOutput("docs_only", "false");
+            core.setOutput("chart_only", "false");
+            core.setOutput("runtime_changed", "true");
 
             if (!commentBody.startsWith(commandPrefix)) {
               core.info(`Comment does not start with '${commandPrefix}', skipping.`);
@@ -134,3 +164,23 @@ jobs:
             core.setOutput("should_run", "true");
             core.setOutput("head_sha", pr.head.sha);
             core.setOutput("pr_number", `${pr.number}`);
+
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner,
+              repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+            const helmPath = (process.env.HELM_PATH || "").replace(/^\.\/+/, "").replace(/\/+$/, "");
+            const isMarkdown = filename => /\.(md|mdx|markdown)$/i.test(filename);
+            const isHelm = filename => helmPath && (filename === helmPath || filename.startsWith(`${helmPath}/`));
+            const changed = files.map(file => file.filename);
+            const hasFiles = changed.length > 0;
+            const hasHelm = changed.some(isHelm);
+            const docsOnly = hasFiles && changed.every(isMarkdown);
+            const chartOnly = hasFiles && hasHelm && changed.every(filename => isMarkdown(filename) || isHelm(filename));
+            const runtimeChanged = !docsOnly && !chartOnly;
+            core.setOutput("docs_only", docsOnly ? "true" : "false");
+            core.setOutput("chart_only", chartOnly ? "true" : "false");
+            core.setOutput("runtime_changed", runtimeChanged ? "true" : "false");
+            core.info(`Change classification: docs_only=${docsOnly}, chart_only=${chartOnly}, runtime_changed=${runtimeChanged}`);

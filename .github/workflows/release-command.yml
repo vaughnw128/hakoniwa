@@ -83,6 +83,10 @@ on:
         description: "Whether to allow release commands for fork PRs."
         type: boolean
         default: false
+      allowed-author-associations:
+        description: "Comma-separated GitHub author associations allowed to run release commands."
+        type: string
+        default: "OWNER,MEMBER"
       skip-image-scan:
         description: "Skip Grype scan of the release candidate image."
         type: boolean
@@ -179,20 +183,32 @@ jobs:
     steps:
       - id: validate
         uses: actions/github-script@v8
+        env:
+          COMMENT_AUTHOR_ASSOCIATION: ${{ inputs.comment-author-association }}
+          ALLOWED_AUTHOR_ASSOCIATIONS: ${{ inputs.allowed-author-associations }}
+          ALLOW_FORKS: ${{ inputs.allow-forks }}
+          REQUIRED_APPROVALS: ${{ inputs.required-approvals }}
+          REQUIRE_APPROVAL: ${{ inputs.require-approval }}
+          RELEASE_TAG: ${{ needs.parse.outputs.tag }}
         with:
           github-token: ${{ github.token }}
           script: |
             const { owner, repo } = context.repo;
             const pull_number = Number("${{ needs.parse.outputs.pr_number }}");
-            const association = `${{ inputs.comment-author-association }}`;
-            const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
-            const allowForks = `${{ inputs.allow-forks }}` === "true";
-            const requiredApprovalsRaw = `${{ inputs.required-approvals }}`.trim();
-            const legacyRequireApproval = `${{ inputs.require-approval }}` === "true";
+            const association = process.env.COMMENT_AUTHOR_ASSOCIATION || "";
+            const trustedAssociations = new Set(
+              (process.env.ALLOWED_AUTHOR_ASSOCIATIONS || "OWNER,MEMBER")
+                .split(",")
+                .map(item => item.trim())
+                .filter(Boolean)
+            );
+            const allowForks = process.env.ALLOW_FORKS === "true";
+            const requiredApprovalsRaw = (process.env.REQUIRED_APPROVALS || "").trim();
+            const legacyRequireApproval = process.env.REQUIRE_APPROVAL === "true";
             const requiredApprovals = requiredApprovalsRaw === ""
               ? (legacyRequireApproval ? 1 : 0)
               : Number(requiredApprovalsRaw);
-            const tag = `${{ needs.parse.outputs.tag }}`;
+            const tag = process.env.RELEASE_TAG || "";
 
             if (!Number.isInteger(requiredApprovals) || requiredApprovals < 0) {
               core.setFailed(`required-approvals must be a non-negative integer. Got '${requiredApprovalsRaw}'.`);
@@ -256,18 +272,6 @@ jobs:
             core.setOutput("head_sha", pr.head.sha);
             core.setOutput("base_ref", pr.base.ref);
 
-      - name: Comment validation start
-        uses: actions/github-script@v8
-        with:
-          github-token: ${{ github.token }}
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: Number("${{ needs.parse.outputs.pr_number }}"),
-              body: "Release `${{ needs.parse.outputs.tag }}` requested. Gate checks passed; resolving the latest tested PR candidate before merge.",
-            });
-
   announce:
     name: Announce Release Start
     needs: parse
@@ -277,7 +281,7 @@ jobs:
       check_id: ${{ steps.start.outputs.check_id }}
     steps:
       - name: Get app token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: ${{ vars.APP_ID }}
@@ -313,17 +317,20 @@ jobs:
               core.warning(`Could not create release command check run: ${error.message}`);
             }
             core.setOutput("check_id", checkRunId);
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: pull_number,
-              body: [
-                "Release `${{ needs.parse.outputs.tag }}` command received.",
-                "",
-                "- Status: validating release gates.",
-                "- Run: " + runUrl,
-              ].join("\n"),
-            });
+            try {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pull_number,
+                body: [
+                  "Release `${{ needs.parse.outputs.tag }}` started.",
+                  "",
+                  "[View run](" + runUrl + ")",
+                ].join("\n"),
+              });
+            } catch (error) {
+              core.warning(`Could not comment on release start: ${error.message}`);
+            }
 
   merge:
     name: Merge Pull Request
@@ -334,7 +341,7 @@ jobs:
       merged_sha: ${{ steps.merge.outputs.merged_sha }}
     steps:
       - name: Get app token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: ${{ vars.APP_ID }}
@@ -422,6 +429,7 @@ jobs:
       chart_url: ${{ steps.resolve.outputs.chart_url }}
       chart_version: ${{ steps.resolve.outputs.chart_version }}
       source_run_id: ${{ steps.resolve.outputs.source_run_id }}
+      chart_only: ${{ steps.resolve.outputs.chart_only }}
     steps:
       - id: resolve
         uses: actions/github-script@v8
@@ -457,7 +465,8 @@ jobs:
 
               if (metadata.schema !== "hakoniwa.pr-candidate.v1") continue;
               if (metadata.head_sha !== headSha) continue;
-              if (!metadata.digest || !metadata.digest.startsWith("sha256:")) continue;
+              const chartOnly = metadata.chart_only === true;
+              if (!chartOnly && (!metadata.digest || !metadata.digest.startsWith("sha256:"))) continue;
               if (requiresChart && (!metadata.chart_url || !metadata.chart_version)) {
                 core.warning(`Candidate check ${run.id} did not include published chart metadata.`);
                 continue;
@@ -470,12 +479,13 @@ jobs:
               core.setOutput("chart_url", metadata.chart_url || "");
               core.setOutput("chart_version", metadata.chart_version || "");
               core.setOutput("source_run_id", metadata.run_id || "");
-              core.info(`Resolved PR candidate digest ${metadata.digest} from check ${run.id}.`);
+              core.setOutput("chart_only", chartOnly ? "true" : "false");
+              core.info(chartOnly ? `Resolved chart-only PR candidate from check ${run.id}.` : `Resolved PR candidate digest ${metadata.digest} from check ${run.id}.`);
               return;
             }
 
-            const chartRequirement = requiresChart ? " and published chart metadata" : "";
-            core.setFailed(`No successful Hakoniwa PR Candidate check with reusable image digest${chartRequirement} was found for ${headSha}. Run the PR candidate build command on the latest PR commit, then retry release.`);
+            const chartRequirement = requiresChart ? " plus chart metadata" : "";
+            core.setFailed(`No successful Hakoniwa PR Candidate check with reusable image digest or chart-only metadata${chartRequirement} was found for ${headSha}. Run the PR candidate build command on the latest PR commit, then retry release.`);
 
   tag:
     name: Create Release Tag
@@ -484,7 +494,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Get app token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: ${{ vars.APP_ID }}
@@ -522,7 +532,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Get app token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: ${{ vars.APP_ID }}
@@ -533,19 +543,66 @@ jobs:
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           script: |
+            const { owner, repo } = context.repo;
             const ok = "${{ needs.promote.result }}" === "success";
-            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
             const checkRunId = Number("${{ needs.announce.outputs.check_id }}");
-            const body = ok
+            const failedJobExcerpt = async () => {
+              const { data } = await github.rest.actions.listJobsForWorkflowRun({
+                owner,
+                repo,
+                run_id: context.runId,
+                per_page: 100,
+              });
+              const jobs = data.jobs
+                .filter(job => ["failure", "cancelled", "timed_out"].includes(job.conclusion))
+                .filter(job => job.name !== "Notify Release")
+                .slice(0, 3);
+              const lines = [];
+              for (const job of jobs) {
+                lines.push(`- ${job.name}: ${job.conclusion}`);
+                try {
+                  const response = await github.request("GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs", {
+                    owner,
+                    repo,
+                    job_id: job.id,
+                  });
+                  const text = String(response.data || "");
+                  const excerpt = text
+                    .split(/\r?\n/)
+                    .map(line => line.replace(/^\d{4}-\d{2}-\d{2}T[^\s]+\s+/, "").trim())
+                    .filter(line =>
+                      line.includes("::error") ||
+                      /^error[:\s]/i.test(line) ||
+                      /^fatal[:\s]/i.test(line) ||
+                      /failed/i.test(line)
+                    )
+                    .slice(-3)
+                    .join("\n")
+                    .slice(0, 900);
+                  if (excerpt) lines.push("```text\n" + excerpt + "\n```");
+                } catch (error) {
+                  core.warning(`Could not fetch logs for ${job.name}: ${error.message}`);
+                }
+              }
+              return lines;
+            };
+            const failures = ok ? [] : await failedJobExcerpt();
+            let details = ok
               ? (() => {
                 const lines = [
                   "Released `${{ needs.parse.outputs.tag }}`.",
                   "",
                   "- Commit: `${{ needs.merge.outputs.merged_sha }}`",
-                  "- Image: `${{ needs.promote.outputs.image }}`",
-                  "- Candidate digest: `${{ needs.resolve-candidate.outputs.digest }}`",
-                  "- Candidate image tag: `${{ needs.resolve-candidate.outputs.image_tag }}`",
                 ];
+                const chartOnly = "${{ needs.resolve-candidate.outputs.chart_only }}" === "true";
+                if (chartOnly) {
+                  lines.push("- Mode: chart-only");
+                } else {
+                  lines.push("- Image: `${{ needs.promote.outputs.image }}`");
+                  lines.push("- Candidate digest: `${{ needs.resolve-candidate.outputs.digest }}`");
+                  lines.push("- Candidate image tag: `${{ needs.resolve-candidate.outputs.image_tag }}`");
+                }
                 const chartUrl = "${{ needs.resolve-candidate.outputs.chart_url }}";
                 const chartVersion = "${{ needs.resolve-candidate.outputs.chart_version }}";
                 if (chartUrl) lines.push("- Chart URL: `" + chartUrl + "`");
@@ -562,6 +619,44 @@ jobs:
                   "- Promote: `${{ needs.promote.result }}`",
                   "- Run: " + runUrl,
                 ].join("\n");
+            if (failures.length) {
+              details += "\n\nFailure excerpt:\n" + failures.join("\n");
+            }
+            const body = ok
+              ? (() => {
+                const lines = [
+                  "Released `${{ needs.parse.outputs.tag }}`.",
+                  "",
+                  "- Commit: `${{ needs.merge.outputs.merged_sha }}`",
+                ];
+                const chartOnly = "${{ needs.resolve-candidate.outputs.chart_only }}" === "true";
+                if (chartOnly) {
+                  lines.push("- Mode: chart-only");
+                } else {
+                  lines.push("- Image: `${{ needs.promote.outputs.image }}`");
+                }
+                const chartVersion = "${{ needs.resolve-candidate.outputs.chart_version }}";
+                if (chartVersion) lines.push("- Chart: `" + chartVersion + "`");
+                lines.push("- [View run](" + runUrl + ")");
+                return lines.join("\n");
+              })()
+              : [
+                  "Release `${{ needs.parse.outputs.tag }}` did not complete.",
+                  "",
+                  "- Merge: `${{ needs.merge.result }}`",
+                  "- Candidate: `${{ needs.resolve-candidate.result }}`",
+                  "- Promote: `${{ needs.promote.result }}`",
+                  "- [View run](" + runUrl + ")",
+                ].join("\n");
+            let commentBody = body;
+            if (failures.length) {
+              commentBody += "\n\nFailure excerpt:\n" + failures.slice(0, 6).join("\n");
+            }
+            await core.summary
+              .addHeading(ok ? "Release Succeeded" : "Release Did Not Complete")
+              .addRaw(details)
+              .write();
+
             if (checkRunId) {
               try {
                 await github.rest.checks.update({
@@ -574,16 +669,20 @@ jobs:
                   details_url: runUrl,
                   output: {
                     title: ok ? "Release command succeeded" : "Release command failed",
-                    summary: body,
+                    summary: details,
                   },
                 });
               } catch (error) {
                 core.warning(`Could not update release command check run: ${error.message}`);
               }
             }
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: Number("${{ needs.parse.outputs.pr_number }}"),
-              body,
-            });
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: Number("${{ needs.parse.outputs.pr_number }}"),
+                body: commentBody,
+              });
+            } catch (error) {
+              core.warning(`Could not comment on release result: ${error.message}`);
+            }

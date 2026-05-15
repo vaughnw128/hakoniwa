@@ -27,6 +27,10 @@ on:
         description: "Whether to allow PR candidate commands for fork PRs."
         type: boolean
         default: false
+      allowed-author-associations:
+        description: "Comma-separated GitHub author associations allowed to run PR candidate commands."
+        type: string
+        default: "OWNER,MEMBER"
       language:
         description: "Primary language: rust, python, go, or none."
         type: string
@@ -67,6 +71,10 @@ on:
         description: "Helm chart package name (defaults to repository name)."
         type: string
         default: ""
+      skip-docs-only:
+        description: "Skip PR candidate builds when only markdown files changed."
+        type: boolean
+        default: true
       dependency-min-age-days:
         description: "Minimum package publish age required before building a candidate container."
         type: number
@@ -74,6 +82,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
   checks: write
   issues: write
   packages: write
@@ -91,11 +100,13 @@ jobs:
       comment-author-type: ${{ inputs.comment-author-type }}
       command-prefix: ${{ inputs.command-prefix }}
       allow-forks: ${{ inputs.allow-forks }}
+      allowed-author-associations: ${{ inputs.allowed-author-associations }}
+      helm-path: ${{ inputs.helm-path }}
     secrets: inherit
 
   candidate:
     needs: prepare
-    if: ${{ needs.prepare.outputs.should_run == 'true' }}
+    if: ${{ needs.prepare.outputs.should_run == 'true' && !(inputs.skip-docs-only && needs.prepare.outputs.docs_only == 'true') }}
     uses: vaughnw128/hakoniwa/.github/workflows/candidate.yml@main
     with:
       ref: ${{ needs.prepare.outputs.head_sha }}
@@ -112,25 +123,35 @@ jobs:
       helm-path: ${{ inputs.helm-path }}
       chart-name: ${{ inputs.chart-name }}
       dependency-min-age-days: ${{ inputs.dependency-min-age-days }}
+      skip-container-build: ${{ needs.prepare.outputs.chart_only == 'true' }}
+      chart-only: ${{ needs.prepare.outputs.chart_only == 'true' }}
     secrets: inherit
 
   announce:
     name: Announce PR Candidate
     needs: prepare
-    if: ${{ needs.prepare.outputs.should_run == 'true' }}
+    if: ${{ needs.prepare.outputs.should_run == 'true' && !(inputs.skip-docs-only && needs.prepare.outputs.docs_only == 'true') }}
     runs-on: ubuntu-latest
     outputs:
       check_id: ${{ steps.start.outputs.check_id }}
     steps:
+      - name: Get app token
+        uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
       - name: Comment candidate start
         id: start
         uses: actions/github-script@v8
         with:
-          github-token: ${{ github.token }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const sha = "${{ needs.prepare.outputs.head_sha }}".slice(0, 7);
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             let checkRunId = "";
+            const chartOnly = "${{ needs.prepare.outputs.chart_only }}" === "true";
             try {
               const check = await github.rest.checks.create({
                 owner: context.repo.owner,
@@ -141,8 +162,8 @@ jobs:
                 started_at: new Date().toISOString(),
                 details_url: runUrl,
                 output: {
-                  title: "PR candidate build started",
-                  summary: "Building a deployable PR candidate image and chart.",
+                  title: chartOnly ? "Chart-only candidate started" : "PR candidate build started",
+                  summary: chartOnly ? "Packaging a chart-only candidate without building a container image." : "Building a deployable PR candidate image and chart.",
                 },
               });
               checkRunId = String(check.data.id);
@@ -150,41 +171,103 @@ jobs:
               core.warning(`Could not create PR candidate check run: ${error.message}`);
             }
             core.setOutput("check_id", checkRunId);
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: Number("${{ needs.prepare.outputs.pr_number }}"),
-              body: [
-                "PR candidate build started.",
-                "",
-                "- Commit: `" + sha + "`",
-                "- Run: " + runUrl,
-              ].join("\n"),
-            });
+            const startBody = [
+              (chartOnly ? "Chart-only candidate started" : "PR candidate build started") + " for `" + sha + "`.",
+              "",
+              "[View run](" + runUrl + ")",
+            ].join("\n");
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: Number("${{ needs.prepare.outputs.pr_number }}"),
+                body: startBody,
+              });
+            } catch (error) {
+              core.warning(`Could not comment on PR candidate start: ${error.message}`);
+            }
 
   notify:
     name: Notify PR Candidate
     needs: [prepare, announce, candidate]
-    if: ${{ always() && needs.prepare.outputs.should_run == 'true' }}
+    if: ${{ always() && needs.prepare.outputs.should_run == 'true' && !(inputs.skip-docs-only && needs.prepare.outputs.docs_only == 'true') }}
     runs-on: ubuntu-latest
     steps:
+      - name: Get app token
+        uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
       - name: Comment candidate result
         uses: actions/github-script@v8
         with:
-          github-token: ${{ github.token }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
+            const { owner, repo } = context.repo;
             const ok = "${{ needs.candidate.result }}" === "success";
-            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const chartOnly = "${{ needs.prepare.outputs.chart_only }}" === "true";
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
             const checkRunId = Number("${{ needs.announce.outputs.check_id }}");
-            const lines = ok
-              ? [
-                  "PR candidate build succeeded.",
-                  "",
-                  "- Image: `${{ needs.candidate.outputs.image }}`",
-                  "- Docker image tag: `${{ needs.candidate.outputs.image_tag }}`",
-                  "- Digest: `${{ needs.candidate.outputs.digest }}`",
-                  "- Run: " + runUrl,
-                ]
+            const failedJobExcerpt = async () => {
+              const { data } = await github.rest.actions.listJobsForWorkflowRun({
+                owner,
+                repo,
+                run_id: context.runId,
+                per_page: 100,
+              });
+              const jobs = data.jobs
+                .filter(job => ["failure", "cancelled", "timed_out"].includes(job.conclusion))
+                .filter(job => job.name !== "Notify PR Candidate")
+                .slice(0, 2);
+              const lines = [];
+              for (const job of jobs) {
+                lines.push(`- ${job.name}: ${job.conclusion}`);
+                try {
+                  const response = await github.request("GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs", {
+                    owner,
+                    repo,
+                    job_id: job.id,
+                  });
+                  const text = String(response.data || "");
+                  const excerpt = text
+                    .split(/\r?\n/)
+                    .map(line => line.replace(/^\d{4}-\d{2}-\d{2}T[^\s]+\s+/, "").trim())
+                    .filter(line =>
+                      line.includes("::error") ||
+                      /^error[:\s]/i.test(line) ||
+                      /^fatal[:\s]/i.test(line) ||
+                      /failed/i.test(line)
+                    )
+                    .slice(-3)
+                    .join("\n")
+                    .slice(0, 900);
+                  if (excerpt) lines.push("```text\n" + excerpt + "\n```");
+                } catch (error) {
+                  core.warning(`Could not fetch logs for ${job.name}: ${error.message}`);
+                }
+              }
+              return lines;
+            };
+            const failures = ok ? [] : await failedJobExcerpt();
+            const details = ok
+              ? (chartOnly
+                ? [
+                    "Chart-only candidate succeeded.",
+                    "",
+                    "- Chart URL: `${{ needs.candidate.outputs.chart_url }}`",
+                    "- Chart version: `${{ needs.candidate.outputs.chart_version }}`",
+                    "- Run: " + runUrl,
+                  ]
+                : [
+                    "PR candidate build succeeded.",
+                    "",
+                    "- Image: `${{ needs.candidate.outputs.image }}`",
+                    "- Docker image tag: `${{ needs.candidate.outputs.image_tag }}`",
+                    "- Digest: `${{ needs.candidate.outputs.digest }}`",
+                    "- Run: " + runUrl,
+                  ])
               : [
                   "PR candidate build failed.",
                   "",
@@ -192,11 +275,44 @@ jobs:
                   "- Candidate: `${{ needs.candidate.result }}`",
                   "- Run: " + runUrl,
                 ];
-
-            if (ok && "${{ inputs.helm-path }}" !== "") {
-              lines.push("- Chart URL: `${{ needs.candidate.outputs.chart_url }}`");
-              lines.push("- Chart version: `${{ needs.candidate.outputs.chart_version }}`");
+            if (failures.length) {
+              details.push("");
+              details.push("Failure excerpt:");
+              details.push(...failures);
             }
+
+            if (ok && "${{ inputs.helm-path }}" !== "" && !chartOnly) {
+              details.push("- Chart URL: `${{ needs.candidate.outputs.chart_url }}`");
+              details.push("- Chart version: `${{ needs.candidate.outputs.chart_version }}`");
+            }
+            const commentLines = ok
+              ? (chartOnly
+                ? [
+                    "Chart-only candidate ready.",
+                    "",
+                    "- Chart: `${{ needs.candidate.outputs.chart_version }}`",
+                  ]
+                : [
+                    "PR candidate ready.",
+                    "",
+                    "- Image tag: `${{ needs.candidate.outputs.image_tag }}`",
+                    "- Digest: `${{ needs.candidate.outputs.digest }}`",
+                  ])
+              : [
+                  "PR candidate failed.",
+                  "",
+                  "- Candidate: `${{ needs.candidate.result }}`",
+                ];
+            if (failures.length) {
+              commentLines.push("");
+              commentLines.push("Failure excerpt:");
+              commentLines.push(...failures.slice(0, 4));
+            }
+            if (ok && "${{ inputs.helm-path }}" !== "" && !chartOnly) {
+              commentLines.push("- Chart: `${{ needs.candidate.outputs.chart_version }}`");
+            }
+            commentLines.push("- [View run](" + runUrl + ")");
+
             const metadata = ok ? {
               schema: "hakoniwa.pr-candidate.v1",
               head_sha: "${{ needs.prepare.outputs.head_sha }}",
@@ -206,11 +322,16 @@ jobs:
               digest: "${{ needs.candidate.outputs.digest }}",
               chart_url: "${{ needs.candidate.outputs.chart_url }}",
               chart_version: "${{ needs.candidate.outputs.chart_version }}",
+              chart_only: chartOnly,
               run_id: String(context.runId),
             } : null;
             const summary = metadata
-              ? `${lines.join("\n")}\n\n<!-- hakoniwa:candidate ${JSON.stringify(metadata)} -->`
-              : lines.join("\n");
+              ? `${details.join("\n")}\n\n<!-- hakoniwa:candidate ${JSON.stringify(metadata)} -->`
+              : details.join("\n");
+            await core.summary
+              .addHeading(ok ? "PR Candidate Build Succeeded" : "PR Candidate Build Failed")
+              .addRaw(details.join("\n"))
+              .write();
 
             if (checkRunId) {
               try {
@@ -232,9 +353,49 @@ jobs:
               }
             }
 
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: Number("${{ needs.prepare.outputs.pr_number }}"),
-              body: lines.join("\n"),
-            });
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: Number("${{ needs.prepare.outputs.pr_number }}"),
+                body: commentLines.join("\n"),
+              });
+            } catch (error) {
+              core.warning(`Could not comment on PR candidate result: ${error.message}`);
+            }
+
+  docs-only:
+    name: Skip Docs-Only Candidate
+    needs: prepare
+    if: ${{ inputs.skip-docs-only && needs.prepare.outputs.should_run == 'true' && needs.prepare.outputs.docs_only == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get app token
+        uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
+      - name: Comment docs-only skip
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              "PR candidate skipped: only markdown files changed.",
+              "",
+              "[View run](" + runUrl + ")",
+            ].join("\n");
+            await core.summary.addHeading("PR Candidate Skipped").addRaw(body).write();
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: Number("${{ needs.prepare.outputs.pr_number }}"),
+                body,
+              });
+            } catch (error) {
+              core.warning(`Could not comment on docs-only skip: ${error.message}`);
+            }

@@ -122,10 +122,10 @@ jobs:
         with:
           cmd: |
             yq -i '.version = "${{ needs.meta.outputs.version }}"' ${{ inputs.helm-path }}/Chart.yaml
-            yq -i '.appVersion = "${{ needs.meta.outputs.version }}"' ${{ inputs.helm-path }}/Chart.yaml
-            yq -i '.single-container.image = "${{ needs.meta.outputs.image_repo }}"' ${{ inputs.helm-path }}/values.yaml
-            yq -i '.single-container.imageTag = "${{ needs.meta.outputs.version }}"' ${{ inputs.helm-path }}/values.yaml
             if [ -n "${{ inputs.image-digest }}" ]; then
+              yq -i '.appVersion = "${{ needs.meta.outputs.version }}"' ${{ inputs.helm-path }}/Chart.yaml
+              yq -i '.single-container.image = "${{ needs.meta.outputs.image_repo }}"' ${{ inputs.helm-path }}/values.yaml
+              yq -i '.single-container.imageTag = "${{ needs.meta.outputs.version }}"' ${{ inputs.helm-path }}/values.yaml
               yq -i '.single-container.imageDigest = "${{ inputs.image-digest }}"' ${{ inputs.helm-path }}/values.yaml
             fi
 
@@ -151,7 +151,7 @@ jobs:
           ref: ${{ inputs.ref }}
 
       - name: Get app token
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         id: app-token
         with:
           app-id: ${{ vars.APP_ID }}

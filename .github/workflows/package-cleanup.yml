@@ -1,0 +1,149 @@
+name: Package Cleanup
+
+on:
+  workflow_call:
+    inputs:
+      package-name:
+        description: "GHCR container package name. Defaults to the repository name."
+        type: string
+        default: ""
+      retention-days:
+        description: "Delete matching package versions older than this many days."
+        type: number
+        default: 14
+      tag-prefixes:
+        description: "Comma-separated temporary tag prefixes eligible for deletion."
+        type: string
+        default: "pr-"
+      exact-tags:
+        description: "Comma-separated exact temporary tags eligible for deletion."
+        type: string
+        default: "buildcache"
+      min-versions-to-keep:
+        description: "Minimum newest matching versions to keep even if older than retention."
+        type: number
+        default: 5
+      dry-run:
+        description: "List matching package versions without deleting them."
+        type: boolean
+        default: false
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup:
+    name: Cleanup GHCR Packages
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old temporary package versions
+        uses: actions/github-script@v8
+        env:
+          PACKAGE_NAME: ${{ inputs.package-name }}
+          RETENTION_DAYS: ${{ inputs.retention-days }}
+          TAG_PREFIXES: ${{ inputs.tag-prefixes }}
+          EXACT_TAGS: ${{ inputs.exact-tags }}
+          MIN_VERSIONS_TO_KEEP: ${{ inputs.min-versions-to-keep }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const packageName = process.env.PACKAGE_NAME || context.repo.repo;
+            const retentionDays = Number(process.env.RETENTION_DAYS || "14");
+            const minVersionsToKeep = Number(process.env.MIN_VERSIONS_TO_KEEP || "5");
+            const dryRun = process.env.DRY_RUN === "true" || context.eventName === "workflow_dispatch";
+            const prefixes = (process.env.TAG_PREFIXES || "")
+              .split(",")
+              .map(item => item.trim())
+              .filter(Boolean);
+            const exactTags = new Set(
+              (process.env.EXACT_TAGS || "")
+                .split(",")
+                .map(item => item.trim())
+                .filter(Boolean)
+            );
+            const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+
+            if (!Number.isFinite(retentionDays) || retentionDays < 1) {
+              core.setFailed(`retention-days must be at least 1. Got '${process.env.RETENTION_DAYS}'.`);
+              return;
+            }
+            if (!Number.isFinite(minVersionsToKeep) || minVersionsToKeep < 0) {
+              core.setFailed(`min-versions-to-keep must be non-negative. Got '${process.env.MIN_VERSIONS_TO_KEEP}'.`);
+              return;
+            }
+            if (!prefixes.length && !exactTags.size) {
+              core.setFailed("At least one tag prefix or exact tag must be configured.");
+              return;
+            }
+
+            const listParams = {
+              package_type: "container",
+              package_name: packageName,
+              per_page: 100,
+            };
+            const deleteParams = {
+              package_type: "container",
+              package_name: packageName,
+            };
+            let versions;
+            try {
+              versions = await github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByUser, {
+                username: owner,
+                ...listParams,
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              versions = await github.paginate(github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg, {
+                org: owner,
+                ...listParams,
+              });
+            }
+
+            const isTemporaryTag = tag =>
+              exactTags.has(tag) || prefixes.some(prefix => tag.startsWith(prefix));
+            const candidates = versions
+              .map(version => ({
+                id: version.id,
+                createdAt: version.created_at,
+                tags: version.metadata?.container?.tags || [],
+              }))
+              .filter(version => version.tags.length > 0)
+              .filter(version => version.tags.every(isTemporaryTag))
+              .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+            const deletable = candidates
+              .slice(minVersionsToKeep)
+              .filter(version => new Date(version.createdAt).getTime() < cutoff);
+
+            const lines = [
+              `Package: \`${owner}/${packageName}\``,
+              `Dry run: \`${dryRun}\``,
+              `Candidates: \`${candidates.length}\``,
+              `Deleting: \`${deletable.length}\``,
+            ];
+
+            for (const version of deletable) {
+              lines.push(`- ${version.id}: ${version.tags.map(tag => `\`${tag}\``).join(", ")} (${version.createdAt})`);
+              if (dryRun) continue;
+              try {
+                await github.rest.packages.deletePackageVersionForUser({
+                  username: owner,
+                  ...deleteParams,
+                  package_version_id: version.id,
+                });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await github.rest.packages.deletePackageVersionForOrg({
+                  org: owner,
+                  ...deleteParams,
+                  package_version_id: version.id,
+                });
+              }
+            }
+
+            await core.summary
+              .addHeading("Package Cleanup")
+              .addRaw(lines.join("\n"))
+              .write();

@@ -24,12 +24,15 @@ Options:
   --release-command TEXT  Release command prefix. Default: euclid release.
   --merge-method METHOD   merge, squash, or rebase. Default: squash.
   --required-approvals N  Current approving reviews required for release. Default: 1.
+  --allowed-author-associations LIST
+                         Comment author associations allowed to run commands. Default: OWNER,MEMBER.
   --enable-codeql         Generate an advanced CodeQL job. Leave off when GitHub CodeQL default setup is enabled.
   --no-pr-check           Do not write verify-pr.yml.
   --no-security           Do not write security.yml.
   --no-help               Do not write pr-help.yml.
   --no-preview            Do not write pr-candidate.yml.
   --no-release            Do not write pr-release.yml.
+  --no-package-cleanup    Do not write package-cleanup.yml.
   --force                 Overwrite existing workflow files.
   -h, --help              Show this help.
 USAGE
@@ -49,10 +52,12 @@ preview_command="euclid build"
 release_command="euclid release"
 merge_method="squash"
 required_approvals="1"
+allowed_author_associations="OWNER,MEMBER"
 enable_codeql=0
 write_help=1
 write_preview=1
 write_release=1
+write_package_cleanup=1
 write_pr_check=1
 write_security=1
 force=0
@@ -73,12 +78,14 @@ while [[ $# -gt 0 ]]; do
     --release-command) release_command="${2:?missing value for --release-command}"; shift 2 ;;
     --merge-method) merge_method="${2:?missing value for --merge-method}"; shift 2 ;;
     --required-approvals) required_approvals="${2:?missing value for --required-approvals}"; shift 2 ;;
+    --allowed-author-associations) allowed_author_associations="${2:?missing value for --allowed-author-associations}"; shift 2 ;;
     --enable-codeql) enable_codeql=1; shift ;;
     --no-pr-check) write_pr_check=0; shift ;;
     --no-security) write_security=0; shift ;;
     --no-help) write_help=0; shift ;;
     --no-preview) write_preview=0; shift ;;
     --no-release) write_release=0; shift ;;
+    --no-package-cleanup) write_package_cleanup=0; shift ;;
     --force) force=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -108,6 +115,11 @@ fi
 
 if [[ ! "$dependency_min_age_days" =~ ^[0-9]+$ ]]; then
   echo "--dependency-min-age-days must be a non-negative integer" >&2
+  exit 2
+fi
+
+if [[ -z "$allowed_author_associations" ]]; then
+  echo "--allowed-author-associations must not be empty" >&2
   exit 2
 fi
 
@@ -168,6 +180,8 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  issues: write
   packages: read
 
 jobs:
@@ -177,6 +191,18 @@ jobs:
       language: $language
 $python_line$binary_line$helm_line
     secrets: inherit
+
+  notify-failure:
+    needs: verify
+    if: \${{ always() && github.event_name == 'pull_request' && needs.verify.result != 'success' }}
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    uses: $hakoniwa/pr-failure-comment.yml@$workflow_ref
+    with:
+      pr-number: \${{ github.event.pull_request.number }}
+      title: "Verify failed."
 EOF
 )
 write_workflow "$workflow_dir/verify.yml" "$verify"
@@ -191,6 +217,8 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  issues: write
 
 jobs:
   verify-pr:
@@ -198,6 +226,18 @@ jobs:
     with:
       pr-title: \${{ github.event.pull_request.title }}
       pr-body: \${{ github.event.pull_request.body || '' }}
+
+  notify-failure:
+    needs: verify-pr
+    if: \${{ always() && needs.verify-pr.result != 'success' }}
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    uses: $hakoniwa/pr-failure-comment.yml@$workflow_ref
+    with:
+      pr-number: \${{ github.event.pull_request.number }}
+      title: "PR metadata check failed."
 EOF
 )
   write_workflow "$workflow_dir/verify-pr.yml" "$pr_check"
@@ -216,6 +256,9 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  issues: write
+  security-events: write
 
 jobs:
   scan:
@@ -229,6 +272,18 @@ jobs:
 $codeql_line
 $dependency_age_line
     secrets: inherit
+
+  notify-failure:
+    needs: scan
+    if: \${{ always() && github.event_name == 'pull_request' && needs.scan.result != 'success' }}
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    uses: $hakoniwa/pr-failure-comment.yml@$workflow_ref
+    with:
+      pr-number: \${{ github.event.pull_request.number }}
+      title: "Security checks failed."
 EOF
 )
   write_workflow "$workflow_dir/security.yml" "$security"
@@ -282,6 +337,7 @@ jobs:
   candidate:
     if: \${{ github.event.issue.pull_request && github.event.comment.user.type != 'Bot' }}
     permissions:
+      actions: read
       contents: read
       issues: write
       checks: write
@@ -296,6 +352,7 @@ jobs:
       comment-author-type: \${{ github.event.comment.user.type || '' }}
       command-prefix: $preview_command
       allow-forks: false
+      allowed-author-associations: "$allowed_author_associations"
       language: $language
 $python_line$binary_line$helm_line$chart_line
 $platforms_line
@@ -340,6 +397,7 @@ jobs:
       comment-author-association: \${{ github.event.comment.author_association || '' }}
       comment-author-type: \${{ github.event.comment.user.type || '' }}
       command-prefix: $release_command
+      allowed-author-associations: "$allowed_author_associations"
       language: $language
 $python_line$binary_line$helm_line$chart_line
 $platforms_line
@@ -350,6 +408,34 @@ $cache_line
 EOF
 )
   write_workflow "$workflow_dir/pr-release.yml" "$release"
+fi
+
+if [[ "$write_package_cleanup" -eq 1 ]]; then
+  package_cleanup=$(cat <<EOF
+name: Package Cleanup
+
+on:
+  schedule:
+    - cron: "23 6 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup:
+    uses: $hakoniwa/package-cleanup.yml@$workflow_ref
+    with:
+      package-name: \${{ github.event.repository.name }}
+      retention-days: 14
+      tag-prefixes: pr-
+      exact-tags: buildcache
+      min-versions-to-keep: 5
+      dry-run: false
+EOF
+)
+  write_workflow "$workflow_dir/package-cleanup.yml" "$package_cleanup"
 fi
 
 echo

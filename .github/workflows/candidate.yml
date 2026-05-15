@@ -103,6 +103,14 @@ on:
         description: "Minimum package publish age required before building a candidate container."
         type: number
         default: 7
+      skip-container-build:
+        description: "Skip image build and publish, for example for chart-only candidates."
+        type: boolean
+        default: false
+      chart-only:
+        description: "Package the chart without stamping a newly built image."
+        type: boolean
+        default: false
     outputs:
       image:
         description: "Immutable candidate image reference."
@@ -287,7 +295,7 @@ jobs:
 
   dependency-age:
     needs: [validate, verify-gate, verify]
-    if: ${{ always() && needs.validate.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
+    if: ${{ always() && !inputs.skip-container-build && needs.validate.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
     uses: vaughnw128/hakoniwa/.github/workflows/dependency-age.yml@main
     with:
       ref: ${{ inputs.ref }}
@@ -297,7 +305,7 @@ jobs:
 
   build-rust-amd64:
     needs: [validate, verify-gate, verify, dependency-age]
-    if: ${{ always() && inputs.language == 'rust' && contains(inputs.platforms, 'linux/amd64') && needs.validate.result == 'success' && needs.dependency-age.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
+    if: ${{ always() && !inputs.skip-container-build && inputs.language == 'rust' && contains(inputs.platforms, 'linux/amd64') && needs.validate.result == 'success' && needs.dependency-age.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
     uses: vaughnw128/hakoniwa/.github/workflows/build-rust-binary.yml@main
     with:
       binary-name: ${{ inputs.binary-name }}
@@ -306,7 +314,7 @@ jobs:
 
   build-rust-arm64:
     needs: [validate, verify-gate, verify, dependency-age]
-    if: ${{ always() && inputs.language == 'rust' && contains(inputs.platforms, 'linux/arm64') && needs.validate.result == 'success' && needs.dependency-age.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
+    if: ${{ always() && !inputs.skip-container-build && inputs.language == 'rust' && contains(inputs.platforms, 'linux/arm64') && needs.validate.result == 'success' && needs.dependency-age.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
     uses: vaughnw128/hakoniwa/.github/workflows/build-rust-binary.yml@main
     with:
       binary-name: ${{ inputs.binary-name }}
@@ -316,7 +324,7 @@ jobs:
   container:
     name: Build Candidate Image
     needs: [meta, validate, verify-gate, verify, dependency-age, build-rust-amd64, build-rust-arm64]
-    if: ${{ always() && needs.meta.result == 'success' && needs.validate.result == 'success' && needs.dependency-age.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') && (inputs.language != 'rust' || ((!contains(inputs.platforms, 'linux/amd64') || needs.build-rust-amd64.result == 'success') && (!contains(inputs.platforms, 'linux/arm64') || needs.build-rust-arm64.result == 'success'))) }}
+    if: ${{ always() && !inputs.skip-container-build && needs.meta.result == 'success' && needs.validate.result == 'success' && needs.dependency-age.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') && (inputs.language != 'rust' || ((!contains(inputs.platforms, 'linux/amd64') || needs.build-rust-amd64.result == 'success') && (!contains(inputs.platforms, 'linux/arm64') || needs.build-rust-arm64.result == 'success'))) }}
     uses: vaughnw128/hakoniwa/.github/workflows/container-build.yml@main
     with:
       ref: ${{ inputs.ref }}
@@ -368,7 +376,7 @@ jobs:
   chart:
     name: Package Candidate Chart
     needs: [meta, container, image-scan]
-    if: ${{ always() && needs.container.result == 'success' && (inputs.skip-image-scan || needs.image-scan.result == 'success') && inputs.helm-path != '' }}
+    if: ${{ always() && inputs.helm-path != '' && ((inputs.skip-container-build && inputs.chart-only) || (needs.container.result == 'success' && (inputs.skip-image-scan || needs.image-scan.result == 'success'))) }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -382,10 +390,12 @@ jobs:
         with:
           cmd: |
             yq -i '.version = "${{ needs.meta.outputs.chart_version }}"' ${{ inputs.helm-path }}/Chart.yaml
-            yq -i '.appVersion = "${{ needs.meta.outputs.image_tag }}"' ${{ inputs.helm-path }}/Chart.yaml
-            yq -i '.${{ inputs.helm-image-repository-key }} = "${{ needs.meta.outputs.image_repo }}"' ${{ inputs.helm-path }}/values.yaml
-            yq -i '.${{ inputs.helm-image-tag-key }} = "${{ needs.meta.outputs.image_tag }}"' ${{ inputs.helm-path }}/values.yaml
-            yq -i '.${{ inputs.helm-image-digest-key }} = "${{ needs.container.outputs.digest }}"' ${{ inputs.helm-path }}/values.yaml
+            if [ "${{ inputs.chart-only }}" != "true" ]; then
+              yq -i '.appVersion = "${{ needs.meta.outputs.image_tag }}"' ${{ inputs.helm-path }}/Chart.yaml
+              yq -i '.${{ inputs.helm-image-repository-key }} = "${{ needs.meta.outputs.image_repo }}"' ${{ inputs.helm-path }}/values.yaml
+              yq -i '.${{ inputs.helm-image-tag-key }} = "${{ needs.meta.outputs.image_tag }}"' ${{ inputs.helm-path }}/values.yaml
+              yq -i '.${{ inputs.helm-image-digest-key }} = "${{ needs.container.outputs.digest }}"' ${{ inputs.helm-path }}/values.yaml
+            fi
 
       - name: Login to GitHub Container Registry
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin

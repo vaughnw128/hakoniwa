@@ -1,0 +1,120 @@
+name: PR Failure Comment
+
+on:
+  workflow_call:
+    inputs:
+      pr-number:
+        description: "Pull request number to comment on."
+        type: string
+        required: true
+      title:
+        description: "Short failure title."
+        type: string
+        required: true
+      max-failed-jobs:
+        description: "Maximum failed jobs to include."
+        type: number
+        default: 3
+      max-log-lines:
+        description: "Maximum matching log lines per failed job."
+        type: number
+        default: 4
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  comment:
+    name: Comment PR Failure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get app token
+        uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ vars.APP_ID }}
+          private-key: ${{ secrets.PRIVATE_KEY }}
+
+      - name: Comment failure summary
+        uses: actions/github-script@v8
+        env:
+          PR_NUMBER: ${{ inputs.pr-number }}
+          TITLE: ${{ inputs.title }}
+          MAX_FAILED_JOBS: ${{ inputs.max-failed-jobs }}
+          MAX_LOG_LINES: ${{ inputs.max-log-lines }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = Number(process.env.PR_NUMBER);
+            const title = process.env.TITLE || "Workflow failed";
+            const maxFailedJobs = Number(process.env.MAX_FAILED_JOBS || "3");
+            const maxLogLines = Number(process.env.MAX_LOG_LINES || "4");
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+
+            const { data } = await github.rest.actions.listJobsForWorkflowRun({
+              owner,
+              repo,
+              run_id: context.runId,
+              per_page: 100,
+            });
+            const failedJobs = data.jobs
+              .filter(job => ["failure", "cancelled", "timed_out"].includes(job.conclusion))
+              .filter(job => job.name !== "Comment PR Failure")
+              .slice(0, maxFailedJobs);
+
+            const lines = [
+              title,
+              "",
+            ];
+            if (!failedJobs.length) {
+              lines.push("- No failed jobs were available yet.");
+            }
+
+            for (const job of failedJobs) {
+              lines.push(`- ${job.name}: ${job.conclusion}`);
+              try {
+                const response = await github.request("GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs", {
+                  owner,
+                  repo,
+                  job_id: job.id,
+                });
+                const text = String(response.data || "");
+                const excerpt = text
+                  .split(/\r?\n/)
+                  .map(line => line.replace(/^\d{4}-\d{2}-\d{2}T[^\s]+\s+/, "").trim())
+                  .filter(line =>
+                    line.includes("::error") ||
+                    /^error[:\s]/i.test(line) ||
+                    /^fatal[:\s]/i.test(line) ||
+                    /failed/i.test(line)
+                  )
+                  .slice(-maxLogLines)
+                  .join("\n")
+                  .slice(0, 1200);
+                if (excerpt) lines.push("```text\n" + excerpt + "\n```");
+              } catch (error) {
+                core.warning(`Could not fetch logs for ${job.name}: ${error.message}`);
+              }
+            }
+
+            lines.push("- [View run](" + runUrl + ")");
+            const body = lines.join("\n");
+
+            await core.summary
+              .addHeading(title)
+              .addRaw(body)
+              .write();
+
+            try {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: prNumber,
+                body,
+              });
+            } catch (error) {
+              core.warning(`Could not comment on PR failure: ${error.message}`);
+            }
