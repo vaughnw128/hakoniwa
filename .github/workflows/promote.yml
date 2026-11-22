@@ -27,6 +27,18 @@ on:
         description: "Helm chart package name. Defaults to repository name."
         type: string
         default: ""
+      helm-image-repository-key:
+        description: "YQ path for the chart image repository value."
+        type: string
+        default: "single-container.image"
+      helm-image-tag-key:
+        description: "YQ path for the chart image tag value."
+        type: string
+        default: "single-container.imageTag"
+      helm-image-digest-key:
+        description: "YQ path for the chart image digest value."
+        type: string
+        default: "single-container.imageDigest"
       helm-registry:
         description: "OCI registry for Helm charts."
         type: string
@@ -64,17 +76,17 @@ jobs:
       - id: compute
         shell: bash
         run: |
-          raw="${{ inputs.version }}"
+          raw="${INPUTS_VERSION}"
           version="${raw#v}"
           if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::version must be semantic version-like, got '$raw'"
             exit 1
           fi
 
-          image_repo="${{ inputs.image-repo }}"
+          image_repo="${INPUTS_IMAGE_REPO}"
           [ -z "$image_repo" ] && image_repo="ghcr.io/${GITHUB_REPOSITORY,,}"
 
-          chart_name="${{ inputs.chart-name }}"
+          chart_name="${INPUTS_CHART_NAME}"
           [ -z "$chart_name" ] && chart_name="${GITHUB_REPOSITORY#*/}"
 
           {
@@ -84,6 +96,10 @@ jobs:
             echo "image=${image_repo}:${version}"
             echo "chart_name=${chart_name}"
           } >> "$GITHUB_OUTPUT"
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+          INPUTS_IMAGE_REPO: ${{ inputs.image-repo }}
+          INPUTS_CHART_NAME: ${{ inputs.chart-name }}
 
   image:
     name: Promote Image Digest
@@ -92,7 +108,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -101,9 +117,13 @@ jobs:
       - name: Promote candidate digest to release tags
         run: |
           docker buildx imagetools create \
-            -t "${{ needs.meta.outputs.image_repo }}:${{ needs.meta.outputs.version }}" \
-            -t "${{ needs.meta.outputs.image_repo }}:latest" \
-            "${{ needs.meta.outputs.image_repo }}@${{ inputs.image-digest }}"
+            -t "${NEEDS_META_OUTPUTS_IMAGE_REPO}:${NEEDS_META_OUTPUTS_VERSION}" \
+            -t "${NEEDS_META_OUTPUTS_IMAGE_REPO}:latest" \
+            "${NEEDS_META_OUTPUTS_IMAGE_REPO}@${INPUTS_IMAGE_DIGEST}"
+        env:
+          NEEDS_META_OUTPUTS_IMAGE_REPO: ${{ needs.meta.outputs.image_repo }}
+          NEEDS_META_OUTPUTS_VERSION: ${{ needs.meta.outputs.version }}
+          INPUTS_IMAGE_DIGEST: ${{ inputs.image-digest }}
 
   chart:
     name: Publish Release Chart
@@ -111,34 +131,48 @@ jobs:
     if: ${{ always() && inputs.helm-path != '' && (inputs.image-digest == '' || needs.image.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.ref }}
+          persist-credentials: false
 
-      - uses: azure/setup-helm@v5
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
 
       - name: Stamp release chart
-        uses: mikefarah/yq@v4.45.4
-        with:
-          cmd: |
-            yq -i '.version = "${{ needs.meta.outputs.version }}"' ${{ inputs.helm-path }}/Chart.yaml
-            if [ -n "${{ inputs.image-digest }}" ]; then
-              yq -i '.appVersion = "${{ needs.meta.outputs.version }}"' ${{ inputs.helm-path }}/Chart.yaml
-              yq -i '.single-container.image = "${{ needs.meta.outputs.image_repo }}"' ${{ inputs.helm-path }}/values.yaml
-              yq -i '.single-container.imageTag = "${{ needs.meta.outputs.version }}"' ${{ inputs.helm-path }}/values.yaml
-              yq -i '.single-container.imageDigest = "${{ inputs.image-digest }}"' ${{ inputs.helm-path }}/values.yaml
-            fi
+        env:
+          HELM_PATH: ${{ inputs.helm-path }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          IMAGE_REPO: ${{ needs.meta.outputs.image_repo }}
+          IMAGE_DIGEST: ${{ inputs.image-digest }}
+          REPOSITORY_KEY: ${{ inputs.helm-image-repository-key }}
+          TAG_KEY: ${{ inputs.helm-image-tag-key }}
+          DIGEST_KEY: ${{ inputs.helm-image-digest-key }}
+        run: |
+          yq -i '.version = strenv(VERSION)' "$HELM_PATH/Chart.yaml"
+          if [ -n "$IMAGE_DIGEST" ]; then
+            yq -i '.appVersion = strenv(VERSION)' "$HELM_PATH/Chart.yaml"
+            yq -i 'eval("." + strenv(REPOSITORY_KEY)) = strenv(IMAGE_REPO)' "$HELM_PATH/values.yaml"
+            yq -i 'eval("." + strenv(TAG_KEY)) = strenv(VERSION)' "$HELM_PATH/values.yaml"
+            yq -i 'eval("." + strenv(DIGEST_KEY)) = strenv(IMAGE_DIGEST)' "$HELM_PATH/values.yaml"
+          fi
 
       - name: Login to GitHub Container Registry
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
       - name: Package and push chart
         run: |
-          helm dependency build "${{ inputs.helm-path }}"
-          helm package "${{ inputs.helm-path }}" \
-            --version "${{ needs.meta.outputs.version }}" \
-            --app-version "${{ needs.meta.outputs.version }}"
-          helm push "./${{ needs.meta.outputs.chart_name }}-${{ needs.meta.outputs.version }}.tgz" "${{ inputs.helm-registry }}"
+          helm dependency build "${INPUTS_HELM_PATH}"
+          helm package "${INPUTS_HELM_PATH}" \
+            --version "${NEEDS_META_OUTPUTS_VERSION}" \
+            --app-version "${NEEDS_META_OUTPUTS_VERSION}"
+          helm push "./${NEEDS_META_OUTPUTS_CHART_NAME}-${NEEDS_META_OUTPUTS_VERSION}.tgz" "${INPUTS_HELM_REGISTRY}"
+        env:
+          INPUTS_HELM_PATH: ${{ inputs.helm-path }}
+          NEEDS_META_OUTPUTS_VERSION: ${{ needs.meta.outputs.version }}
+          NEEDS_META_OUTPUTS_CHART_NAME: ${{ needs.meta.outputs.chart_name }}
+          INPUTS_HELM_REGISTRY: ${{ inputs.helm-registry }}
 
   github-release:
     name: Create GitHub Release
@@ -146,22 +180,18 @@ jobs:
     if: ${{ always() && inputs.create-github-release && (inputs.image-digest == '' || needs.image.result == 'success') && (inputs.helm-path == '' || needs.chart.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.ref }}
-
-      - name: Get app token
-        uses: actions/create-github-app-token@v3
-        id: app-token
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.PRIVATE_KEY }}
+          persist-credentials: false
 
       - name: Create release
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          NEEDS_META_OUTPUTS_TAG: ${{ needs.meta.outputs.tag }}
+          INPUTS_REF: ${{ inputs.ref }}
         run: |
-          gh release create "${{ needs.meta.outputs.tag }}" \
-            --target "${{ inputs.ref }}" \
-            --title "${{ needs.meta.outputs.tag }}" \
+          gh release create "${NEEDS_META_OUTPUTS_TAG}" --repo "$GITHUB_REPOSITORY" \
+            --target "${INPUTS_REF}" \
+            --title "${NEEDS_META_OUTPUTS_TAG}" \
             --generate-notes

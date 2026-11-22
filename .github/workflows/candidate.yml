@@ -160,12 +160,12 @@ jobs:
         shell: bash
         run: |
           repo_name="${GITHUB_REPOSITORY#*/}"
-          ref="${{ inputs.ref }}"
+          ref="${INPUTS_REF}"
           short_sha="${ref:0:7}"
-          kind="${{ inputs.candidate-kind }}"
-          id="${{ inputs.candidate-id }}"
+          kind="${INPUTS_CANDIDATE_KIND}"
+          id="${INPUTS_CANDIDATE_ID}"
 
-          image_repo="${{ inputs.image-repo }}"
+          image_repo="${INPUTS_IMAGE_REPO}"
           [ -z "$image_repo" ] && image_repo="ghcr.io/${GITHUB_REPOSITORY,,}"
 
           if [ -n "$id" ]; then
@@ -176,10 +176,10 @@ jobs:
             floating_tag="${kind}"
           fi
 
-          chart_name="${{ inputs.chart-name }}"
+          chart_name="${INPUTS_CHART_NAME}"
           [ -z "$chart_name" ] && chart_name="$repo_name"
 
-          chart_registry="${{ inputs.chart-registry }}"
+          chart_registry="${INPUTS_CHART_REGISTRY}"
           [ -z "$chart_registry" ] && chart_registry="oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
           chart_url="${chart_registry%/}/${chart_name}"
 
@@ -201,6 +201,13 @@ jobs:
             echo "chart_version=${chart_version}"
             echo "chart_url=${chart_url}"
           } >> "$GITHUB_OUTPUT"
+        env:
+          INPUTS_REF: ${{ inputs.ref }}
+          INPUTS_CANDIDATE_KIND: ${{ inputs.candidate-kind }}
+          INPUTS_CANDIDATE_ID: ${{ inputs.candidate-id }}
+          INPUTS_IMAGE_REPO: ${{ inputs.image-repo }}
+          INPUTS_CHART_NAME: ${{ inputs.chart-name }}
+          INPUTS_CHART_REGISTRY: ${{ inputs.chart-registry }}
 
   validate:
     name: Validate Inputs
@@ -215,7 +222,7 @@ jobs:
         if: inputs.language == 'rust'
         shell: bash
         run: |
-          IFS=',' read -ra platforms <<< "${{ inputs.platforms }}"
+          IFS=',' read -ra platforms <<< "${INPUTS_PLATFORMS}"
           supported=0
           for platform in "${platforms[@]}"; do
             platform="${platform//[[:space:]]/}"
@@ -235,6 +242,8 @@ jobs:
             echo "::error::At least one supported Rust platform is required."
             exit 1
           fi
+        env:
+          INPUTS_PLATFORMS: ${{ inputs.platforms }}
 
   verify-gate:
     name: Verify Gate
@@ -245,10 +254,13 @@ jobs:
       verified: ${{ steps.checks.outputs.verified }}
     steps:
       - id: checks
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          REQUIRE_VERIFY: ${{ inputs.require-verify }}
+          REF: ${{ inputs.ref }}
         with:
           script: |
-            const requireVerify = "${{ inputs.require-verify }}" === "true";
+            const requireVerify = process.env.REQUIRE_VERIFY === "true";
             if (!requireVerify) {
               core.info("Verification disabled for this candidate.");
               core.setOutput("should_verify", "false");
@@ -257,7 +269,7 @@ jobs:
             }
 
             const { owner, repo } = context.repo;
-            const ref = "${{ inputs.ref }}";
+            const ref = process.env.REF;
             const checkRuns = await github.paginate(github.rest.checks.listForRef, {
               owner,
               repo,
@@ -291,7 +303,6 @@ jobs:
       build-args: ${{ inputs.build-args }}
       python-version: ${{ inputs.python-version }}
       binary-name: ${{ inputs.binary-name }}
-    secrets: inherit
 
   dependency-age:
     needs: [validate, verify-gate, verify]
@@ -345,7 +356,6 @@ jobs:
       executable-paths: |
         ${{ inputs.language == 'rust' && contains(inputs.platforms, 'linux/amd64') && format('dist/linux/amd64/{0}', inputs.binary-name) || '' }}
         ${{ inputs.language == 'rust' && contains(inputs.platforms, 'linux/arm64') && format('dist/linux/arm64/{0}', inputs.binary-name) || '' }}
-    secrets: inherit
 
   image-scan:
     name: Grype Candidate Image Scan
@@ -355,7 +365,7 @@ jobs:
     steps:
       - name: Run Grype
         id: grype
-        uses: anchore/scan-action@v7
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: ${{ needs.meta.outputs.image_repo }}@${{ needs.container.outputs.digest }}
           registry-username: ${{ github.repository_owner }}
@@ -368,7 +378,7 @@ jobs:
 
       - name: Upload Grype results to GitHub Security
         if: always() && steps.grype.outputs.sarif != ''
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@1bd86f2fdb4b86187fa4059f16f31a3202acc9ea # v4.39.4
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-image
@@ -379,37 +389,54 @@ jobs:
     if: ${{ always() && inputs.helm-path != '' && ((inputs.skip-container-build && inputs.chart-only) || (needs.container.result == 'success' && (inputs.skip-image-scan || needs.image-scan.result == 'success'))) }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.ref }}
+          persist-credentials: false
 
-      - uses: azure/setup-helm@v5
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
 
       - name: Stamp chart with candidate image
-        uses: mikefarah/yq@v4.45.4
-        with:
-          cmd: |
-            yq -i '.version = "${{ needs.meta.outputs.chart_version }}"' ${{ inputs.helm-path }}/Chart.yaml
-            if [ "${{ inputs.chart-only }}" != "true" ]; then
-              yq -i '.appVersion = "${{ needs.meta.outputs.image_tag }}"' ${{ inputs.helm-path }}/Chart.yaml
-              yq -i '.${{ inputs.helm-image-repository-key }} = "${{ needs.meta.outputs.image_repo }}"' ${{ inputs.helm-path }}/values.yaml
-              yq -i '.${{ inputs.helm-image-tag-key }} = "${{ needs.meta.outputs.image_tag }}"' ${{ inputs.helm-path }}/values.yaml
-              yq -i '.${{ inputs.helm-image-digest-key }} = "${{ needs.container.outputs.digest }}"' ${{ inputs.helm-path }}/values.yaml
-            fi
+        env:
+          HELM_PATH: ${{ inputs.helm-path }}
+          CHART_ONLY: ${{ inputs.chart-only }}
+          CHART_VERSION: ${{ needs.meta.outputs.chart_version }}
+          IMAGE_REPO: ${{ needs.meta.outputs.image_repo }}
+          IMAGE_TAG: ${{ needs.meta.outputs.image_tag }}
+          IMAGE_DIGEST: ${{ needs.container.outputs.digest }}
+          REPOSITORY_KEY: ${{ inputs.helm-image-repository-key }}
+          TAG_KEY: ${{ inputs.helm-image-tag-key }}
+          DIGEST_KEY: ${{ inputs.helm-image-digest-key }}
+        run: |
+          yq -i '.version = strenv(CHART_VERSION)' "$HELM_PATH/Chart.yaml"
+          if [ "$CHART_ONLY" != "true" ]; then
+            yq -i '.appVersion = strenv(IMAGE_TAG)' "$HELM_PATH/Chart.yaml"
+            yq -i 'eval("." + strenv(REPOSITORY_KEY)) = strenv(IMAGE_REPO)' "$HELM_PATH/values.yaml"
+            yq -i 'eval("." + strenv(TAG_KEY)) = strenv(IMAGE_TAG)' "$HELM_PATH/values.yaml"
+            yq -i 'eval("." + strenv(DIGEST_KEY)) = strenv(IMAGE_DIGEST)' "$HELM_PATH/values.yaml"
+          fi
 
       - name: Login to GitHub Container Registry
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GH_TOKEN" | helm registry login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
 
       - name: Package and push chart
         run: |
-          helm dependency build "${{ inputs.helm-path }}"
-          helm package "${{ inputs.helm-path }}" \
-            --version "${{ needs.meta.outputs.chart_version }}" \
-            --app-version "${{ needs.meta.outputs.image_tag }}"
-          helm push "./${{ needs.meta.outputs.chart_name }}-${{ needs.meta.outputs.chart_version }}.tgz" "${{ needs.meta.outputs.chart_registry }}"
+          helm dependency build "${INPUTS_HELM_PATH}"
+          helm package "${INPUTS_HELM_PATH}" \
+            --version "${NEEDS_META_OUTPUTS_CHART_VERSION}" \
+            --app-version "${NEEDS_META_OUTPUTS_IMAGE_TAG}"
+          helm push "./${NEEDS_META_OUTPUTS_CHART_NAME}-${NEEDS_META_OUTPUTS_CHART_VERSION}.tgz" "${NEEDS_META_OUTPUTS_CHART_REGISTRY}"
+        env:
+          INPUTS_HELM_PATH: ${{ inputs.helm-path }}
+          NEEDS_META_OUTPUTS_CHART_VERSION: ${{ needs.meta.outputs.chart_version }}
+          NEEDS_META_OUTPUTS_IMAGE_TAG: ${{ needs.meta.outputs.image_tag }}
+          NEEDS_META_OUTPUTS_CHART_NAME: ${{ needs.meta.outputs.chart_name }}
+          NEEDS_META_OUTPUTS_CHART_REGISTRY: ${{ needs.meta.outputs.chart_registry }}
 
       - name: Upload chart artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ needs.meta.outputs.chart_name }}-candidate-chart
           path: ./${{ needs.meta.outputs.chart_name }}-${{ needs.meta.outputs.chart_version }}.tgz

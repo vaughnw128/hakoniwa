@@ -1,0 +1,22 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Renovate config for hakoniwa itself.",
+  "extends": ["local>vaughnw128/hakoniwa"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Aikido safe-chain release pinned in the install URL",
+      "managerFilePatterns": ["/^\\.github/actions/safe-chain/action\\.yml$/"],
+      "matchStrings": ["safe-chain/releases/download/(?<currentValue>[^/]+)/install-safe-chain\\.sh"],
+      "depNameTemplate": "AikidoSec/safe-chain",
+      "datasourceTemplate": "github-releases"
+    },
+    {
+      "customType": "regex",
+      "description": "pre-commit hook revisions in the templates",
+      "managerFilePatterns": ["/^templates/pre-commit/.+\\.ya?ml$/"],
+      "matchStrings": ["repo: https://github\\.com/(?<depName>[^\\s]+)\\n\\s+rev: (?<currentValue>\\S+)"],
+      "datasourceTemplate": "github-tags"
+    }
+  ]
+}

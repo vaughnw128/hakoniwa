@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Delete old temporary package versions
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         env:
           PACKAGE_NAME: ${{ inputs.package-name }}
           RETENTION_DAYS: ${{ inputs.retention-days }}

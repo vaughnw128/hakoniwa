@@ -43,6 +43,10 @@ on:
         description: "BuildKit registry cache reference for candidate images."
         type: string
         default: ""
+      image-digest:
+        description: "Already built and scanned image digest (sha256:...) to promote. When set, no new candidate is built."
+        type: string
+        default: ""
       skip-docker:
         description: "Skip candidate image build/promotion."
         type: boolean
@@ -100,8 +104,8 @@ jobs:
       - id: resolve
         shell: bash
         run: |
-          version="${{ inputs.version }}"
-          ref="${{ inputs.ref }}"
+          version="${INPUTS_VERSION}"
+          ref="${INPUTS_REF}"
           [ -z "$ref" ] && ref="${GITHUB_SHA}"
 
           if [ -z "$version" ] && [[ "$GITHUB_REF" == refs/tags/v* ]]; then
@@ -119,6 +123,9 @@ jobs:
             echo "version=${version}"
             echo "ref=${ref}"
           } >> "$GITHUB_OUTPUT"
+        env:
+          INPUTS_VERSION: ${{ inputs.version }}
+          INPUTS_REF: ${{ inputs.ref }}
 
   verify:
     needs: [resolve, verify-gate]
@@ -133,7 +140,6 @@ jobs:
       build-args: ${{ inputs.build-args }}
       python-version: ${{ inputs.python-version }}
       binary-name: ${{ inputs.binary-name }}
-    secrets: inherit
 
   verify-gate:
     name: Verify Gate
@@ -144,11 +150,13 @@ jobs:
       verified: ${{ steps.checks.outputs.verified }}
     steps:
       - id: checks
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          REF: ${{ needs.resolve.outputs.ref }}
         with:
           script: |
             const { owner, repo } = context.repo;
-            const ref = "${{ needs.resolve.outputs.ref }}";
+            const ref = process.env.REF;
             const checkRuns = await github.paginate(github.rest.checks.listForRef, {
               owner,
               repo,
@@ -171,7 +179,7 @@ jobs:
 
   candidate:
     needs: [resolve, verify-gate, verify]
-    if: ${{ always() && !inputs.skip-docker && needs.resolve.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
+    if: ${{ always() && !inputs.skip-docker && inputs.image-digest == '' && needs.resolve.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') }}
     uses: vaughnw128/hakoniwa/.github/workflows/candidate.yml@main
     with:
       ref: ${{ needs.resolve.outputs.ref }}
@@ -191,17 +199,15 @@ jobs:
       image-scan-only-fixed: ${{ inputs.image-scan-only-fixed }}
       helm-path: ""
       require-verify: false
-    secrets: inherit
 
   promote:
     needs: [resolve, verify-gate, verify, candidate]
-    if: ${{ always() && needs.resolve.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') && (inputs.skip-docker || needs.candidate.result == 'success') }}
+    if: ${{ always() && needs.resolve.result == 'success' && (needs.verify-gate.outputs.verified == 'true' || needs.verify.result == 'success') && (inputs.skip-docker || inputs.image-digest != '' || needs.candidate.result == 'success') }}
     uses: vaughnw128/hakoniwa/.github/workflows/promote.yml@main
     with:
       version: ${{ needs.resolve.outputs.version }}
       ref: ${{ needs.resolve.outputs.ref }}
-      image-digest: ${{ inputs.skip-docker && '' || needs.candidate.outputs.digest }}
+      image-digest: ${{ !inputs.skip-docker && (inputs.image-digest != '' && inputs.image-digest || needs.candidate.outputs.digest) || '' }}
       helm-path: ${{ inputs.helm-path }}
       chart-name: ${{ inputs.chart-name }}
       helm-registry: ${{ inputs.helm-registry }}
-    secrets: inherit

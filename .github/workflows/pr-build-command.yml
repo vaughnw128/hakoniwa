@@ -1,0 +1,62 @@
+name: PR Build Command
+
+on:
+  workflow_call:
+    inputs:
+      issue-number:
+        type: string
+        required: true
+      build-workflow:
+        description: "File name of the caller's build workflow."
+        type: string
+        default: "build.yml"
+
+permissions:
+  contents: read
+  actions: write
+  pull-requests: read
+  issues: write
+
+jobs:
+  build:
+    name: Rebuild Candidate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          PR_NUMBER: ${{ inputs.issue-number }}
+          BUILD_WORKFLOW: ${{ inputs.build-workflow }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = Number(process.env.PR_NUMBER);
+            const reply = body => github.rest.issues.createComment({ owner, repo, issue_number, body });
+
+            let permission = "none";
+            try {
+              ({ data: { permission } } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner, repo, username: context.actor,
+              }));
+            } catch (error) { core.warning(error.message); }
+            const allowed = ["admin", "maintain", "write"].includes(permission);
+            await github.rest.reactions.createForIssueComment({
+              owner, repo, comment_id: context.payload.comment.id, content: allowed ? "eyes" : "-1",
+            });
+            if (!allowed) { core.setFailed(`${context.actor} does not have write access.`); return; }
+
+            const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number: issue_number });
+            const { data: { workflow_runs: runs } } = await github.rest.actions.listWorkflowRuns({
+              owner, repo, workflow_id: process.env.BUILD_WORKFLOW, head_sha: pull.head.sha, event: "pull_request", per_page: 10,
+            });
+            const run = runs[0];
+            if (!run) {
+              await reply(`> [!CAUTION]\n> \`/build\` found no Build run for \`${pull.head.sha.slice(0, 7)}\`. Push a commit to start one.`);
+              core.setFailed("No build run.");
+              return;
+            }
+            if (run.status !== "completed") {
+              await reply(`A build for \`${pull.head.sha.slice(0, 7)}\` is already running: ${run.html_url}`);
+              return;
+            }
+            await github.rest.actions.reRunWorkflow({ owner, repo, run_id: run.id });
+            await reply(`Rebuilding the candidate for \`${pull.head.sha.slice(0, 7)}\`: ${run.html_url}`);

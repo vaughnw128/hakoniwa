@@ -1,47 +1,229 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "description": "Shared Renovate preset",
+  "description": "Hakoniwa base Renovate preset. Extend with \"github>vaughnw128/hakoniwa\". Covers GitHub Actions, Docker, Helm, Python, Rust, Go, TypeScript/Vue (npm, pnpm, yarn) and pre-commit.",
   "extends": [
     "config:recommended",
     "docker:enableMajor",
+    "docker:pinDigests",
+    "helpers:pinGitHubActionDigests",
     ":semanticCommits",
-    ":semanticCommitTypeAll(fix)"
+    ":disableRateLimiting",
+    ":timezone(America/New_York)"
   ],
-  "automerge": true,
+  "dependencyDashboard": {
+    "title": "Renovate Dashboard"
+  },
+  "labels": [
+    "dependencies"
+  ],
+  "minimumReleaseAge": "7 days",
+  "internalChecksFilter": "strict",
+  "prCreation": "not-pending",
+  "rangeStrategy": "auto",
+  "automerge": false,
   "automergeType": "pr",
   "platformAutomerge": false,
-  "labels": ["dependencies"],
+  "ignoreTests": false,
+  "rebaseWhen": "behind-base-branch",
+  "pre-commit": {
+    "enabled": true
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "before 6am on monday"
+    ],
+    "automerge": true
+  },
+  "postUpdateOptions": [
+    "gomodTidy",
+    "gomodUpdateImportPaths",
+    "npmDedupe",
+    "pnpmDedupe",
+    "yarnDedupeHighest"
+  ],
   "packageRules": [
     {
-      "description": "Group all non-major updates",
-      "matchUpdateTypes": ["minor", "patch", "digest"],
-      "groupName": "all non-major dependencies",
-      "groupSlug": "all-minor-patch",
-      "automerge": true
+      "description": "Runtime dependency updates are fix(deps) so they cut a patch release on merge.",
+      "matchDepTypes": [
+        "dependencies",
+        "require",
+        "project.dependencies",
+        "normal",
+        "final",
+        "stage",
+        "image"
+      ],
+      "semanticCommitType": "fix"
     },
     {
-      "description": "Auto-merge dev dependencies",
-      "matchDepTypes": ["devDependencies"],
-      "automerge": true
+      "description": "Container base images ship into the release image, so they also release.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "semanticCommitType": "fix"
     },
     {
-      "description": "Pin GitHub Actions digests for supply chain security",
-      "matchManagers": ["github-actions"],
-      "pinDigests": true
+      "description": "Tooling that does not ship (CI, dev and test dependencies, pre-commit hooks) does not release.",
+      "matchManagers": [
+        "github-actions",
+        "pre-commit"
+      ],
+      "semanticCommitType": "ci"
     },
     {
-      "description": "Group Rust crate updates",
-      "matchManagers": ["cargo"],
-      "groupName": "rust dependencies"
+      "description": "Dev and test dependencies do not release.",
+      "matchDepTypes": [
+        "devDependencies",
+        "dev-dependencies",
+        "dependency-groups",
+        "tool.uv.dev-dependencies",
+        "build-dependencies",
+        "optionalDependencies"
+      ],
+      "semanticCommitType": "chore"
     },
     {
-      "description": "Group Python dependency updates",
-      "matchManagers": ["pip_requirements", "pip-compile", "pep621"],
-      "groupName": "python dependencies"
+      "description": "Automerge patch and digest updates once they are 7 days old and every check on the PR has passed. Renovate only merges with all status checks green (ignoreTests: false).",
+      "matchUpdateTypes": [
+        "patch",
+        "digest",
+        "pin",
+        "pinDigest"
+      ],
+      "minimumReleaseAge": "7 days",
+      "automerge": true,
+      "automergeType": "pr"
+    },
+    {
+      "description": "Group patch updates per repo so they land as one tested PR.",
+      "matchUpdateTypes": [
+        "patch",
+        "digest",
+        "pin",
+        "pinDigest"
+      ],
+      "groupName": "patch updates",
+      "groupSlug": "patch"
+    },
+    {
+      "description": "Group minor updates for review.",
+      "matchUpdateTypes": [
+        "minor"
+      ],
+      "groupName": "minor updates",
+      "groupSlug": "minor"
+    },
+    {
+      "description": "0.x versions can break on any bump: review them.",
+      "matchCurrentVersion": "/^v?0\\./",
+      "matchUpdateTypes": [
+        "patch"
+      ],
+      "automerge": false
+    },
+    {
+      "description": "Security scanners and supply-chain tooling are reviewed by hand, never automerged.",
+      "matchPackageNames": [
+        "anchore/scan-action",
+        "anchore/sbom-action",
+        "bridgecrewio/checkov-action",
+        "bridgecrewio/checkov",
+        "github/codeql-action",
+        "actions/attest-build-provenance",
+        "gitleaks/gitleaks",
+        "AikidoSec/safe-chain",
+        "renovatebot/github-action"
+      ],
+      "groupName": "scanner dependencies",
+      "groupSlug": "scanners",
+      "automerge": false
+    },
+    {
+      "description": "Rust crates.",
+      "matchManagers": [
+        "cargo"
+      ],
+      "matchUpdateTypes": [
+        "minor"
+      ],
+      "groupName": "rust minor updates"
+    },
+    {
+      "description": "Python packages.",
+      "matchManagers": [
+        "pep621",
+        "pip_requirements",
+        "pip-compile",
+        "poetry"
+      ],
+      "matchUpdateTypes": [
+        "minor"
+      ],
+      "groupName": "python minor updates"
+    },
+    {
+      "description": "Vue ecosystem moves together.",
+      "matchPackageNames": [
+        "vue",
+        "vue-router",
+        "pinia",
+        "@vue/**",
+        "@vitejs/plugin-vue",
+        "vue-tsc"
+      ],
+      "groupName": "vue"
+    },
+    {
+      "description": "Vite and Vitest move together.",
+      "matchPackageNames": [
+        "vite",
+        "vitest",
+        "@vitest/**"
+      ],
+      "groupName": "vite"
+    },
+    {
+      "description": "ESLint, typescript-eslint and Prettier move together.",
+      "matchPackageNames": [
+        "eslint",
+        "@eslint/**",
+        "eslint-plugin-**",
+        "typescript-eslint",
+        "@typescript-eslint/**",
+        "prettier"
+      ],
+      "groupName": "lint tooling",
+      "semanticCommitType": "chore"
+    },
+    {
+      "description": "TypeScript itself.",
+      "matchPackageNames": [
+        "typescript",
+        "@types/**"
+      ],
+      "groupName": "typescript",
+      "semanticCommitType": "chore"
+    },
+    {
+      "description": "Major updates always get their own PR and a review.",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "automerge": false,
+      "groupName": null,
+      "labels": [
+        "dependencies",
+        "major"
+      ]
     }
   ],
   "vulnerabilityAlerts": {
     "enabled": true,
-    "labels": ["security"]
+    "labels": [
+      "dependencies",
+      "security"
+    ],
+    "minimumReleaseAge": "7 days"
   }
 }

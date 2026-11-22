@@ -1,0 +1,143 @@
+name: PR Upgrade Command
+
+on:
+  workflow_call:
+    inputs:
+      issue-number:
+        type: string
+        required: true
+      comment-body:
+        type: string
+        required: true
+      command:
+        type: string
+        default: "/upgrade"
+      flux-repo:
+        type: string
+        default: "vaughnw128/immanent-grove"
+      flux-base:
+        type: string
+        default: "main"
+      flux-file:
+        type: string
+        default: "applications/{chart}/helmrelease.yaml"
+      app-id:
+        description: "GitHub App ID used to open the Flux PR."
+        type: string
+        required: true
+    secrets:
+      APP_PRIVATE_KEY:
+        description: "Private key of the GitHub App used to open the Flux PR."
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  resolve:
+    name: Resolve Candidate
+    runs-on: ubuntu-latest
+    outputs:
+      ok: ${{ steps.resolve.outputs.ok }}
+      chart: ${{ steps.resolve.outputs.chart }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - id: resolve
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          COMMENT_BODY: ${{ inputs.comment-body }}
+          COMMAND: ${{ inputs.command }}
+          PR_NUMBER: ${{ inputs.issue-number }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const e = process.env;
+            core.setOutput("ok", "false");
+            if (!e.COMMENT_BODY.trim().split("\n")[0].startsWith(e.COMMAND)) return;
+
+            const reply = body => github.rest.issues.createComment({
+              owner, repo, issue_number: Number(e.PR_NUMBER), body,
+            });
+
+            let permission = "none";
+            try {
+              ({ data: { permission } } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner, repo, username: context.actor,
+              }));
+            } catch (error) { core.warning(error.message); }
+            await github.rest.reactions.createForIssueComment({
+              owner, repo, comment_id: context.payload.comment.id,
+              content: ["admin", "maintain", "write"].includes(permission) ? "eyes" : "-1",
+            });
+            if (!["admin", "maintain", "write"].includes(permission)) {
+              core.setFailed(`${context.actor} does not have write access.`);
+              return;
+            }
+
+            const { data: pull } = await github.rest.pulls.get({ owner, repo, pull_number: Number(e.PR_NUMBER) });
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: Number(e.PR_NUMBER), per_page: 100,
+            });
+            const mine = comments.find(c => c.user?.type === "Bot" && c.body?.includes("<!-- hakoniwa:candidate-comment"));
+            const match = mine?.body.match(/<!--\s*hakoniwa:candidate-comment\s+({[\s\S]*?})\s*-->/);
+            if (!match) {
+              await reply("> [!CAUTION]\n> `/upgrade` found no candidate on this PR yet. Candidates build on every push; wait for the build to finish.");
+              core.setFailed("No candidate comment.");
+              return;
+            }
+            const meta = JSON.parse(match[1]);
+            if (meta.head_sha !== pull.head.sha) {
+              await reply(`> [!CAUTION]\n> The latest candidate is for \`${meta.head_sha.slice(0, 7)}\` but the PR is at \`${pull.head.sha.slice(0, 7)}\`. Wait for the new build, then run \`/upgrade\` again.`);
+              core.setFailed("Candidate is stale.");
+              return;
+            }
+            if (!meta.chart_version) {
+              await reply("> [!CAUTION]\n> This candidate has no published chart, so there is nothing to deploy.");
+              core.setFailed("No chart.");
+              return;
+            }
+            core.setOutput("ok", "true");
+            core.setOutput("chart", meta.chart_name);
+            core.setOutput("version", meta.chart_version);
+
+  flux:
+    name: Flux PR
+    needs: resolve
+    if: ${{ needs.resolve.outputs.ok == 'true' }}
+    uses: vaughnw128/hakoniwa/.github/workflows/flux-pr.yml@main
+    with:
+      chart-name: ${{ needs.resolve.outputs.chart }}
+      version: ${{ needs.resolve.outputs.version }}
+      flux-repo: ${{ inputs.flux-repo }}
+      flux-base: ${{ inputs.flux-base }}
+      flux-file: ${{ inputs.flux-file }}
+      branch: upgrade/${{ github.event.repository.name }}/pr-${{ inputs.issue-number }}-${{ github.run_id }}
+      title: "chore: deploy ${{ needs.resolve.outputs.chart }} PR ${{ inputs.issue-number }} candidate"
+      body: "Triggered by @${{ github.actor }} on ${{ github.repository }}#${{ inputs.issue-number }}."
+      auto-merge: true
+      app-id: ${{ inputs.app-id }}
+    secrets:
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+
+  report:
+    name: Report
+    needs: [resolve, flux]
+    if: ${{ always() && needs.resolve.outputs.ok == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          PR_URL: ${{ needs.flux.outputs.pr-url }}
+          PR_NUMBER: ${{ inputs.issue-number }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const e = process.env;
+            const body = e.PR_URL
+              ? `**Flux upgrade PR opened:** ${e.PR_URL} (chart \`${e.VERSION}\`, auto-merge on)`
+              : `> [!CAUTION]\n> \`/upgrade\` did not open a Flux PR for \`${e.VERSION}\` (it may already be deployed). [View run](${e.RUN_URL})`;
+            await github.rest.issues.createComment({ owner, repo, issue_number: Number(e.PR_NUMBER), body });

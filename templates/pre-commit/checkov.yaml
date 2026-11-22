@@ -1,0 +1,5 @@
+skip-check:
+  - CKV_DOCKER_7 # base images are digest-pinned, not version-tagged
+  - CKV_DOCKER_2 # health is handled by Kubernetes probes
+  - CKV_DOCKER_3 # runtime user is enforced by the Helm security context
+  - CKV_SECRET_6 # false positives on placeholders and ExternalSecret templates

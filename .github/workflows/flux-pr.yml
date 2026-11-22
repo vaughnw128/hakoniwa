@@ -1,0 +1,151 @@
+name: Flux PR
+
+on:
+  workflow_call:
+    inputs:
+      chart-name:
+        description: "Chart name as it appears in the HelmRelease (spec.chart.spec.chart)."
+        type: string
+        required: true
+      version:
+        description: "Chart version to set."
+        type: string
+        required: true
+      flux-repo:
+        description: "Flux repository as owner/name."
+        type: string
+        default: "vaughnw128/immanent-grove"
+      flux-base:
+        description: "Branch the PR targets. Flux must reconcile from it for the change to deploy."
+        type: string
+        default: "main"
+      flux-file:
+        description: "HelmRelease path in the Flux repo. {chart} is replaced with the chart name."
+        type: string
+        default: "applications/{chart}/helmrelease.yaml"
+      branch:
+        description: "Branch to create in the Flux repo. Nothing happens if it already exists."
+        type: string
+        required: true
+      title:
+        description: "Commit message and PR title (Conventional Commits)."
+        type: string
+        required: true
+      body:
+        description: "PR body."
+        type: string
+        default: ""
+      auto-merge:
+        description: "Merge the PR as soon as the Flux repo allows it."
+        type: boolean
+        default: false
+      app-id:
+        description: "GitHub App ID used to push to the Flux repo."
+        type: string
+        required: true
+    secrets:
+      APP_PRIVATE_KEY:
+        description: "Private key of the GitHub App."
+        required: true
+    outputs:
+      pr-url:
+        description: "URL of the opened PR. Empty when nothing changed or the branch already existed."
+        value: ${{ jobs.flux.outputs.pr-url }}
+
+permissions:
+  contents: read
+
+jobs:
+  flux:
+    name: Open Flux PR
+    runs-on: ubuntu-latest
+    outputs:
+      pr-url: ${{ steps.pr.outputs.pr-url }}
+    steps:
+      - name: Split the Flux repo name
+        id: repo
+        env:
+          FLUX_REPO: ${{ inputs.flux-repo }}
+        run: |
+          echo "owner=${FLUX_REPO%%/*}" >> "$GITHUB_OUTPUT"
+          echo "name=${FLUX_REPO#*/}" >> "$GITHUB_OUTPUT"
+
+      - name: Get app token
+        id: app-token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ steps.repo.outputs.owner }}
+          repositories: ${{ steps.repo.outputs.name }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Checkout Flux repo
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: ${{ inputs.flux-repo }}
+          ref: ${{ inputs.flux-base }}
+          token: ${{ steps.app-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Update the HelmRelease and open the PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          FLUX_REPO: ${{ inputs.flux-repo }}
+          FLUX_BASE: ${{ inputs.flux-base }}
+          FLUX_FILE: ${{ inputs.flux-file }}
+          CHART: ${{ inputs.chart-name }}
+          VERSION: ${{ inputs.version }}
+          BRANCH: ${{ inputs.branch }}
+          TITLE: ${{ inputs.title }}
+          BODY: ${{ inputs.body }}
+          AUTO_MERGE: ${{ inputs.auto-merge }}
+        run: |
+          set -euo pipefail
+          echo "pr-url=" >> "$GITHUB_OUTPUT"
+
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${FLUX_REPO}.git"
+
+          if git ls-remote --exit-code --heads "$remote" "$BRANCH" > /dev/null 2>&1; then
+            echo "Branch $BRANCH already exists in $FLUX_REPO; an earlier run opened this PR."
+            exit 0
+          fi
+
+          file="${FLUX_FILE//\{chart\}/$CHART}"
+          if [ ! -f "$file" ]; then
+            echo "::error::$file is not in $FLUX_REPO@$FLUX_BASE"
+            exit 1
+          fi
+          if ! CHART="$CHART" yq -e 'select(.kind == "HelmRelease" and .spec.chart.spec.chart == strenv(CHART))' "$file" > /dev/null; then
+            echo "::error::$file has no HelmRelease for chart $CHART"
+            exit 1
+          fi
+
+          CHART="$CHART" VERSION="$VERSION" yq -i \
+            '(select(.kind == "HelmRelease" and .spec.chart.spec.chart == strenv(CHART)) | .spec.chart.spec.version) = strenv(VERSION)' \
+            "$file"
+
+          if git diff --quiet; then
+            echo "$CHART is already at $VERSION in $FLUX_REPO."
+            exit 0
+          fi
+
+          git config user.name "hakoniwa[bot]"
+          git config user.email "hakoniwa[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git commit -am "$TITLE"
+          git push "$remote" "$BRANCH"
+
+          pr_url="$(gh pr create --repo "$FLUX_REPO" --base "$FLUX_BASE" --head "$BRANCH" \
+            --title "$TITLE" \
+            --body "$(printf '%s\n\n- `%s` -> `%s` in `%s`\n' "$BODY" "$CHART" "$VERSION" "$file")")"
+
+          if [ "$AUTO_MERGE" = "true" ]; then
+            sleep 10
+            # --auto fails when the repo has no required checks; merge directly then.
+            gh pr merge "$pr_url" --auto --squash --delete-branch --repo "$FLUX_REPO" \
+              || gh pr merge "$pr_url" --squash --delete-branch --repo "$FLUX_REPO"
+          fi
+          echo "pr-url=$pr_url" >> "$GITHUB_OUTPUT"

@@ -30,22 +30,14 @@ jobs:
     name: Comment PR Failure
     runs-on: ubuntu-latest
     steps:
-      - name: Get app token
-        uses: actions/create-github-app-token@v3
-        id: app-token
-        with:
-          app-id: ${{ vars.APP_ID }}
-          private-key: ${{ secrets.PRIVATE_KEY }}
-
       - name: Comment failure summary
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         env:
           PR_NUMBER: ${{ inputs.pr-number }}
           TITLE: ${{ inputs.title }}
           MAX_FAILED_JOBS: ${{ inputs.max-failed-jobs }}
           MAX_LOG_LINES: ${{ inputs.max-log-lines }}
         with:
-          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const { owner, repo } = context.repo;
             const prNumber = Number(process.env.PR_NUMBER);

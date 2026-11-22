@@ -19,6 +19,10 @@ on:
         description: "Maximum allowed PR title length."
         type: number
         default: 100
+      check-commits:
+        description: "Also require every commit in the PR to follow Conventional Commits. Only runs on pull_request events."
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -28,6 +32,26 @@ jobs:
     name: PR Metadata
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        if: ${{ inputs.check-commits && github.event_name == 'pull_request' }}
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate commit messages
+        if: ${{ inputs.check-commits && github.event_name == 'pull_request' }}
+        run: |
+          # A pull_request checkout is a merge commit: ^1 is the base, ^2 is the PR head.
+          bad=0
+          while IFS= read -r subject; do
+            if ! printf '%s' "$subject" | grep -Eq '^(feat|fix|perf|refactor|docs|test|build|ci|chore|revert)(\(.+\))?!?: .+'; then
+              echo "::error::Commit '$subject' does not follow Conventional Commits."
+              bad=1
+            fi
+          done < <(git log --no-merges --format=%s HEAD^1..HEAD^2)
+          exit "$bad"
+
       - name: Validate PR metadata
         env:
           PR_TITLE: ${{ inputs.pr-title }}

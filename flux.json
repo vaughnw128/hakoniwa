@@ -1,0 +1,32 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "description": "Flux GitOps repo preset. Extend with \"github>vaughnw128/hakoniwa:flux\" after the base preset. Repos set their own managerFilePatterns for flux and kubernetes.",
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Flux distribution version in a FluxInstance",
+      "managerFilePatterns": ["/(^|/)flux\\.ya?ml$/"],
+      "matchStrings": ["distribution:\\s*\\n\\s*version:\\s*\"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "fluxcd/flux2",
+      "datasourceTemplate": "github-releases"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "HelmRelease chart and Kubernetes manifest updates deploy straight to the cluster: they are chore(deps), not releases.",
+      "matchManagers": ["flux", "kubernetes", "helm-values"],
+      "semanticCommitType": "chore"
+    },
+    {
+      "description": "Flux and the Flux operator are the control plane: review them, never automerge.",
+      "matchPackageNames": ["fluxcd/flux2", "flux-operator", "ghcr.io/controlplaneio-fluxcd/**"],
+      "automerge": false,
+      "groupName": "flux control plane"
+    },
+    {
+      "description": "Charts and images built by hakoniwa are pinned by hakoniwa's Flux PRs, not by Renovate.",
+      "matchPackageNames": ["ghcr.io/vaughnw128/**", "/^oci://ghcr\\.io/vaughnw128/charts/"],
+      "enabled": false
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-global-schema.json",
+  "description": "Self-hosted Renovate config for the central run in .github/workflows/renovate-autodiscover.yml.",
+  "platform": "github",
+  "autodiscover": true,
+  "autodiscoverFilter": ["vaughnw128/*"],
+  "onboarding": true,
+  "requireConfig": "required",
+  "onboardingConfig": {
+    "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+    "extends": ["github>vaughnw128/hakoniwa"]
+  },
+  "onboardingPrTitle": "chore(deps): configure Renovate",
+  "platformCommit": "enabled",
+  "repositoryCache": "enabled",
+  "internalChecksFilter": "strict"
+}

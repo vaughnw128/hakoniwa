@@ -1,0 +1,247 @@
+name: Release on Merge
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit to release. Defaults to the triggering SHA."
+        type: string
+        default: ""
+      language:
+        description: "Primary language: python, rust, go, or none."
+        type: string
+        default: "none"
+      python-version:
+        type: string
+        default: ""
+      binary-name:
+        type: string
+        default: ""
+      dockerfile:
+        type: string
+        default: "./Dockerfile"
+      build-context:
+        type: string
+        default: "."
+      build-args:
+        type: string
+        default: ""
+      platforms:
+        type: string
+        default: "linux/amd64,linux/arm64"
+      cache-ref:
+        type: string
+        default: ""
+      skip-docker:
+        type: boolean
+        default: false
+      skip-image-scan:
+        type: boolean
+        default: false
+      image-scan-fail-build:
+        description: "Fail the release when Grype finds vulnerabilities at or above the cutoff."
+        type: boolean
+        default: true
+      image-scan-severity-cutoff:
+        type: string
+        default: "critical"
+      image-scan-only-fixed:
+        type: boolean
+        default: true
+      helm-path:
+        type: string
+        default: ""
+      chart-name:
+        type: string
+        default: ""
+      helm-registry:
+        type: string
+        default: "oci://ghcr.io/vaughnw128/charts"
+      flux-repo:
+        description: "Flux repository to update after a release, as owner/name. Empty to skip."
+        type: string
+        default: "vaughnw128/immanent-grove"
+      flux-base:
+        description: "Branch of the Flux repo the release PR targets."
+        type: string
+        default: "main"
+      flux-file:
+        description: "HelmRelease path in the Flux repo. {chart} is replaced with the chart name."
+        type: string
+        default: "applications/{chart}/helmrelease.yaml"
+      promote-pr-candidate:
+        description: "Promote the merged PR's candidate image instead of rebuilding when the merged tree equals the PR head tree."
+        type: boolean
+        default: true
+      app-id:
+        description: "GitHub App ID used to open the Flux PR."
+        type: string
+        default: ""
+      hakoniwa-ref:
+        description: "Hakoniwa ref that provides scripts/next-version.sh."
+        type: string
+        default: "main"
+    secrets:
+      APP_PRIVATE_KEY:
+        description: "Private key of the GitHub App used to open the Flux PR."
+        required: false
+    outputs:
+      released:
+        description: "true when a release was cut."
+        value: ${{ jobs.version.outputs.release }}
+      version:
+        description: "Released version without leading v."
+        value: ${{ jobs.version.outputs.version }}
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Next Version
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.next.outputs.release }}
+      version: ${{ steps.next.outputs.version }}
+      bump: ${{ steps.next.outputs.bump }}
+      ref: ${{ steps.sha.outputs.ref }}
+    steps:
+      - name: Resolve commit
+        id: sha
+        env:
+          INPUT_REF: ${{ inputs.ref }}
+        run: echo "ref=${INPUT_REF:-$GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ steps.sha.outputs.ref }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Checkout Hakoniwa scripts
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: vaughnw128/hakoniwa
+          ref: ${{ inputs.hakoniwa-ref }}
+          path: .hakoniwa
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Work out the next version
+        id: next
+        run: bash .hakoniwa/scripts/next-version.sh "${STEPS_SHA_OUTPUTS_REF}"
+        env:
+          STEPS_SHA_OUTPUTS_REF: ${{ steps.sha.outputs.ref }}
+
+      - name: Summary
+        env:
+          RELEASE: ${{ steps.next.outputs.release }}
+          VERSION: ${{ steps.next.outputs.version }}
+          PREVIOUS: ${{ steps.next.outputs.previous }}
+          BUMP: ${{ steps.next.outputs.bump }}
+        run: |
+          if [ "$RELEASE" = "true" ]; then
+            echo "Releasing v${VERSION} (${BUMP} from ${PREVIOUS:-the first commit})." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No release: no feat, fix, perf, revert or breaking commits since ${PREVIOUS:-the first commit}." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  candidate:
+    name: Find PR Candidate
+    needs: version
+    if: ${{ needs.version.outputs.release == 'true' && inputs.promote-pr-candidate && !inputs.skip-docker }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      digest: ${{ steps.find.outputs.digest }}
+    steps:
+      - id: find
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          SHA: ${{ needs.version.outputs.ref }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const sha = process.env.SHA;
+            core.setOutput("digest", "");
+
+            const pulls = await github.rest.repos.listPullRequestsAssociatedWithCommit({ owner, repo, commit_sha: sha });
+            const pull = pulls.data.find(p => p.merged_at && p.merge_commit_sha === sha);
+            if (!pull) { core.info("Commit is not a PR merge; a fresh image will be built."); return; }
+
+            // Squash and rebase merges rewrite commits, but an unchanged tree means identical content.
+            const mergedTree = (await github.rest.git.getCommit({ owner, repo, commit_sha: sha })).data.tree.sha;
+            const headTree = (await github.rest.git.getCommit({ owner, repo, commit_sha: pull.head.sha })).data.tree.sha;
+            if (mergedTree !== headTree) {
+              core.info(`Merged tree ${mergedTree} differs from PR head tree ${headTree}; a fresh image will be built.`);
+              return;
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: pull.number, per_page: 100,
+            });
+            const mine = comments.find(c => c.user?.type === "Bot" && c.body?.includes("<!-- hakoniwa:candidate-comment"));
+            const match = mine?.body.match(/<!--\s*hakoniwa:candidate-comment\s+({[\s\S]*?})\s*-->/);
+            if (!match) { core.info("No candidate comment on the PR; a fresh image will be built."); return; }
+            const meta = JSON.parse(match[1]);
+            if (meta.head_sha !== pull.head.sha || !String(meta.digest || "").startsWith("sha256:")) {
+              core.info("The candidate comment is stale or has no digest; a fresh image will be built.");
+              return;
+            }
+            core.info(`Promoting PR #${pull.number} candidate ${meta.digest}.`);
+            core.setOutput("digest", meta.digest);
+
+  release:
+    name: Release v${{ needs.version.outputs.version }}
+    needs: [version, candidate]
+    if: ${{ always() && needs.version.outputs.release == 'true' && needs.candidate.result != 'failure' && needs.candidate.result != 'cancelled' }}
+    permissions:
+      contents: write
+      checks: read
+      packages: write
+      security-events: write
+    uses: vaughnw128/hakoniwa/.github/workflows/release.yml@main
+    with:
+      version: ${{ needs.version.outputs.version }}
+      ref: ${{ needs.version.outputs.ref }}
+      language: ${{ inputs.language }}
+      python-version: ${{ inputs.python-version }}
+      binary-name: ${{ inputs.binary-name }}
+      dockerfile: ${{ inputs.dockerfile }}
+      build-context: ${{ inputs.build-context }}
+      build-args: ${{ inputs.build-args }}
+      platforms: ${{ inputs.platforms }}
+      cache-ref: ${{ inputs.cache-ref }}
+      skip-docker: ${{ inputs.skip-docker }}
+      image-digest: ${{ needs.candidate.outputs.digest }}
+      skip-image-scan: ${{ inputs.skip-image-scan }}
+      image-scan-fail-build: ${{ inputs.image-scan-fail-build }}
+      image-scan-severity-cutoff: ${{ inputs.image-scan-severity-cutoff }}
+      image-scan-only-fixed: ${{ inputs.image-scan-only-fixed }}
+      helm-path: ${{ inputs.helm-path }}
+      chart-name: ${{ inputs.chart-name }}
+      helm-registry: ${{ inputs.helm-registry }}
+
+  flux:
+    name: Deploy v${{ needs.version.outputs.version }} to Flux
+    needs: [version, release]
+    if: ${{ needs.release.result == 'success' && inputs.helm-path != '' && inputs.flux-repo != '' && inputs.app-id != '' }}
+    uses: vaughnw128/hakoniwa/.github/workflows/flux-pr.yml@main
+    with:
+      chart-name: ${{ inputs.chart-name != '' && inputs.chart-name || github.event.repository.name }}
+      version: ${{ needs.version.outputs.version }}
+      flux-repo: ${{ inputs.flux-repo }}
+      flux-base: ${{ inputs.flux-base }}
+      flux-file: ${{ inputs.flux-file }}
+      branch: release/${{ github.event.repository.name }}/v${{ needs.version.outputs.version }}
+      title: "chore: release ${{ inputs.chart-name != '' && inputs.chart-name || github.event.repository.name }} v${{ needs.version.outputs.version }}"
+      body: "Released from ${{ github.repository }} at ${{ needs.version.outputs.ref }}."
+      auto-merge: true
+      app-id: ${{ inputs.app-id }}
+    secrets:
+      APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}

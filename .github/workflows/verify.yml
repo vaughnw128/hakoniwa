@@ -56,19 +56,27 @@ permissions:
   contents: read
   packages: read
 
+env:
+  SAFE_CHAIN_MINIMUM_PACKAGE_AGE_HOURS: "168"
+
 jobs:
   quality:
     name: Quality
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.ref != '' && inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Install safe-chain
+        if: inputs.language == 'python'
+        uses: vaughnw128/hakoniwa/.github/actions/safe-chain@main
 
       - name: Install uv
         if: inputs.language == 'python' && inputs.python-version == ''
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           enable-cache: true
           cache-dependency-glob: |
@@ -81,7 +89,7 @@ jobs:
 
       - name: Install uv with explicit Python
         if: inputs.language == 'python' && inputs.python-version != ''
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           python-version: ${{ inputs.python-version }}
           enable-cache: true
@@ -103,14 +111,14 @@ jobs:
 
       - name: Setup Rust toolchain
         if: inputs.language == 'rust'
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: ${{ inputs.rust-toolchain }}
           components: rustfmt, clippy
 
       - name: Cache Rust dependencies
         if: inputs.language == 'rust'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: verify-quality-${{ inputs.rust-toolchain }}
 
@@ -124,7 +132,7 @@ jobs:
 
       - name: Setup Go
         if: inputs.language == 'go'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: ${{ inputs.go-version }}
           cache: true
@@ -135,46 +143,54 @@ jobs:
 
       - name: golangci-lint
         if: inputs.language == 'go'
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6.5.2
 
       - name: Set up Helm
         if: inputs.helm-path != ''
-        uses: azure/setup-helm@v5
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
 
       - name: Login to GitHub Container Registry for Helm dependencies
         if: inputs.helm-path != ''
-        run: echo "${{ github.token }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+        run: echo "${{ github.token }}" | helm registry login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
 
       - name: Helm dependency build
         if: inputs.helm-path != ''
-        run: helm dependency build "${{ inputs.helm-path }}"
+        run: helm dependency build "${INPUTS_HELM_PATH}"
+        env:
+          INPUTS_HELM_PATH: ${{ inputs.helm-path }}
 
       - name: Helm lint
         if: inputs.helm-path != ''
-        run: helm lint "${{ inputs.helm-path }}"
+        run: helm lint "${INPUTS_HELM_PATH}"
+        env:
+          INPUTS_HELM_PATH: ${{ inputs.helm-path }}
 
       - name: Helm template
         if: inputs.helm-path != ''
-        run: helm template "${{ inputs.helm-path }}"
+        run: helm template "${INPUTS_HELM_PATH}"
+        env:
+          INPUTS_HELM_PATH: ${{ inputs.helm-path }}
 
       - name: Set up Docker Buildx
         if: inputs.docker-build-check && inputs.dockerfile != ''
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Cache Rust dependencies for Docker build check
         if: inputs.docker-build-check && inputs.language == 'rust' && inputs.dockerfile != ''
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Build Rust binary for Docker build check
         if: inputs.docker-build-check && inputs.language == 'rust' && inputs.binary-name != '' && inputs.dockerfile != ''
         run: |
           cargo build --release
           mkdir -p dist/linux/amd64
-          cp target/release/${{ inputs.binary-name }} dist/linux/amd64/${{ inputs.binary-name }}
+          cp target/release/${INPUTS_BINARY_NAME} dist/linux/amd64/${INPUTS_BINARY_NAME}
+        env:
+          INPUTS_BINARY_NAME: ${{ inputs.binary-name }}
 
       - name: Build Docker image without pushing
         if: inputs.docker-build-check && inputs.dockerfile != ''
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: ${{ inputs.build-context }}
           file: ${{ inputs.dockerfile }}
@@ -191,13 +207,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           ref: ${{ inputs.ref != '' && inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Install safe-chain
+        if: inputs.language == 'python'
+        uses: vaughnw128/hakoniwa/.github/actions/safe-chain@main
 
       - name: Install uv
         if: inputs.language == 'python' && inputs.python-version == ''
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           enable-cache: true
           cache-dependency-glob: |
@@ -210,7 +231,7 @@ jobs:
 
       - name: Install uv with explicit Python
         if: inputs.language == 'python' && inputs.python-version != ''
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           python-version: ${{ inputs.python-version }}
           enable-cache: true
@@ -237,13 +258,13 @@ jobs:
 
       - name: Setup Rust toolchain
         if: inputs.language == 'rust'
-        uses: dtolnay/rust-toolchain@master
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
         with:
           toolchain: ${{ inputs.rust-toolchain }}
 
       - name: Cache Rust dependencies
         if: inputs.language == 'rust'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: verify-tests-${{ inputs.rust-toolchain }}
 
@@ -253,7 +274,7 @@ jobs:
 
       - name: Setup Go
         if: inputs.language == 'go'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version: ${{ inputs.go-version }}
           cache: true
@@ -264,4 +285,6 @@ jobs:
 
       - name: Run extra test command
         if: inputs.extra-test-command != ''
-        run: ${{ inputs.extra-test-command }}
+        run: ${INPUTS_EXTRA_TEST_COMMAND}
+        env:
+          INPUTS_EXTRA_TEST_COMMAND: ${{ inputs.extra-test-command }}

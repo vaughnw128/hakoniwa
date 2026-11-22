@@ -8,33 +8,43 @@ Configure a repository to use Hakoniwa workflows.
 Usage:
   scripts/configure-repo.sh --repo PATH --language rust [options]
 
+Writes:
+  .github/workflows/verify.yml           quality and tests on PRs and main
+  .github/workflows/verify-pr.yml        Conventional Commit PR title and commits
+  .github/workflows/security.yml         Checkov (PR comment), Semgrep, optional CodeQL, dependency age
+  .github/workflows/build.yml            PR candidates (Grype-scanned) and release on merge
+  .github/workflows/commands.yml         /build and /upgrade PR comment commands
+  .github/workflows/pre-commit.yml       runs .pre-commit-config.yaml in CI
+  .github/workflows/package-cleanup.yml  prunes old PR candidate images
+  .pre-commit-config.yaml, .checkov.yaml
+
 Options:
   --repo PATH             Target repository path. Required.
   --language NAME         python, rust, go, or none. Default: none.
   --python-version VER    Python version for CI. Default: auto from repo config.
-  --binary-name NAME      Rust binary name.
+  --binary-name NAME      Rust binary name. Required for rust.
   --helm-path PATH        Consumer chart path, for example ./helm.
-  --chart-name NAME       Helm chart package name.
+  --chart-name NAME       Helm chart package name. Default: repository name.
   --cache-ref REF         BuildKit registry cache ref for image builds.
   --platforms LIST        Docker platforms. Default: linux/amd64,linux/arm64.
   --dependency-min-age-days N
-                         Minimum package publish age before candidate builds. Default: 7.
-  --workflow-ref REF      Hakoniwa ref to use. Default: main.
-  --preview-command TEXT  Preview command. Default: euclid build.
-  --release-command TEXT  Release command prefix. Default: euclid release.
-  --merge-method METHOD   merge, squash, or rebase. Default: squash.
-  --required-approvals N  Current approving reviews required for release. Default: 1.
-  --allowed-author-associations LIST
-                         Comment author associations allowed to run commands. Default: OWNER,MEMBER.
-  --enable-codeql         Generate an advanced CodeQL job. Leave off when GitHub CodeQL default setup is enabled.
+                          Minimum package publish age before candidate builds. Default: 7.
+  --workflow-ref REF      Hakoniwa ref to call. Default: main.
+  --enable-codeql         Add an advanced CodeQL job. Leave off when CodeQL default setup is on.
+  --flux-repo OWNER/NAME  Flux repo that /upgrade and releases update. Default: vaughnw128/immanent-grove.
+  --flux-base BRANCH      Flux repo branch those PRs target. Default: main.
+  --flux-file PATH        HelmRelease path in the Flux repo; {chart} is the chart name.
+                          Default: applications/{chart}/helmrelease.yaml.
+  --no-flux               Do not deploy to Flux (no /upgrade, no Flux PR on release).
   --no-pr-check           Do not write verify-pr.yml.
   --no-security           Do not write security.yml.
-  --no-help               Do not write pr-help.yml.
-  --no-preview            Do not write pr-candidate.yml.
-  --no-release            Do not write pr-release.yml.
   --no-package-cleanup    Do not write package-cleanup.yml.
-  --force                 Overwrite existing workflow files.
+  --no-pre-commit         Do not write pre-commit.yml, .pre-commit-config.yaml or .checkov.yaml.
+  --force                 Overwrite existing files.
   -h, --help              Show this help.
+
+With Flux enabled, the repository needs the APP_ID variable and PRIVATE_KEY secret of the
+GitHub App that opens Flux PRs.
 USAGE
 }
 
@@ -48,18 +58,15 @@ cache_ref=""
 platforms="linux/amd64,linux/arm64"
 dependency_min_age_days="7"
 workflow_ref="main"
-preview_command="euclid build"
-release_command="euclid release"
-merge_method="squash"
-required_approvals="1"
-allowed_author_associations="OWNER,MEMBER"
 enable_codeql=0
-write_help=1
-write_preview=1
-write_release=1
-write_package_cleanup=1
+write_flux=1
+flux_repo="vaughnw128/immanent-grove"
+flux_base="main"
+flux_file="applications/{chart}/helmrelease.yaml"
 write_pr_check=1
 write_security=1
+write_package_cleanup=1
+write_pre_commit=1
 force=0
 
 while [[ $# -gt 0 ]]; do
@@ -74,18 +81,15 @@ while [[ $# -gt 0 ]]; do
     --platforms) platforms="${2:?missing value for --platforms}"; shift 2 ;;
     --dependency-min-age-days) dependency_min_age_days="${2:?missing value for --dependency-min-age-days}"; shift 2 ;;
     --workflow-ref) workflow_ref="${2:?missing value for --workflow-ref}"; shift 2 ;;
-    --preview-command) preview_command="${2:?missing value for --preview-command}"; shift 2 ;;
-    --release-command) release_command="${2:?missing value for --release-command}"; shift 2 ;;
-    --merge-method) merge_method="${2:?missing value for --merge-method}"; shift 2 ;;
-    --required-approvals) required_approvals="${2:?missing value for --required-approvals}"; shift 2 ;;
-    --allowed-author-associations) allowed_author_associations="${2:?missing value for --allowed-author-associations}"; shift 2 ;;
     --enable-codeql) enable_codeql=1; shift ;;
+    --flux-repo) flux_repo="${2:?missing value for --flux-repo}"; shift 2 ;;
+    --flux-base) flux_base="${2:?missing value for --flux-base}"; shift 2 ;;
+    --flux-file) flux_file="${2:?missing value for --flux-file}"; shift 2 ;;
+    --no-flux) write_flux=0; shift ;;
     --no-pr-check) write_pr_check=0; shift ;;
     --no-security) write_security=0; shift ;;
-    --no-help) write_help=0; shift ;;
-    --no-preview) write_preview=0; shift ;;
-    --no-release) write_release=0; shift ;;
     --no-package-cleanup) write_package_cleanup=0; shift ;;
+    --no-pre-commit) write_pre_commit=0; shift ;;
     --force) force=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -103,13 +107,8 @@ case "$language" in
   *) echo "--language must be python, rust, go, or none" >&2; exit 2 ;;
 esac
 
-case "$merge_method" in
-  merge|squash|rebase) ;;
-  *) echo "--merge-method must be merge, squash, or rebase" >&2; exit 2 ;;
-esac
-
-if [[ ! "$required_approvals" =~ ^[0-9]+$ ]]; then
-  echo "--required-approvals must be a non-negative integer" >&2
+if [[ "$language" == "rust" && -z "$binary_name" ]]; then
+  echo "--binary-name is required for --language rust" >&2
   exit 2
 fi
 
@@ -118,15 +117,15 @@ if [[ ! "$dependency_min_age_days" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 
-if [[ -z "$allowed_author_associations" ]]; then
-  echo "--allowed-author-associations must not be empty" >&2
-  exit 2
+if [[ "$write_flux" -eq 1 && -z "$helm_path" ]]; then
+  write_flux=0
 fi
 
 repo="$(cd "$repo" && pwd)"
 workflow_dir="$repo/.github/workflows"
 hakoniwa="vaughnw128/hakoniwa/.github/workflows"
 workflow_ref="${workflow_ref#@}"
+templates="$(cd "$(dirname "${BASH_SOURCE[0]}")/../templates/pre-commit" && pwd)"
 
 yaml_line() {
   local name="$1"
@@ -136,7 +135,7 @@ yaml_line() {
   printf '\n%*s%s: %s' "$indent" "" "$name" "$value"
 }
 
-write_workflow() {
+write_file() {
   local path="$1"
   local content="$2"
 
@@ -150,27 +149,58 @@ write_workflow() {
   echo "write $path"
 }
 
-python_line="$(yaml_line "python-version" "$python_version")"
-binary_line="$(yaml_line "binary-name" "$binary_name")"
-helm_line="$(yaml_line "helm-path" "$helm_path")"
-chart_line="$(yaml_line "chart-name" "$chart_name")"
-cache_line="$(yaml_line "cache-ref" "$cache_ref")"
-platforms_line="$(yaml_line "platforms" "$platforms")"
-dependency_age_line="$(yaml_line "dependency-min-age-days" "$dependency_min_age_days")"
+copy_file() {
+  local from="$1"
+  local path="$2"
+  if [[ -e "$path" && "$force" -ne 1 ]]; then
+    echo "skip $path (exists; use --force to overwrite)"
+    return 0
+  fi
+  cp "$from" "$path"
+  echo "write $path"
+}
+
+build_inputs="      language: $language"
+build_inputs+="$(yaml_line python-version "$python_version")"
+build_inputs+="$(yaml_line binary-name "$binary_name")"
+build_inputs+="$(yaml_line helm-path "$helm_path")"
+build_inputs+="$(yaml_line chart-name "$chart_name")"
+build_inputs+="$(yaml_line platforms "$platforms")"
+build_inputs+="$(yaml_line cache-ref "$cache_ref")"
+
+verify_inputs="      language: $language"
+verify_inputs+="$(yaml_line python-version "$python_version")"
+verify_inputs+="$(yaml_line binary-name "$binary_name")"
+verify_inputs+="$(yaml_line helm-path "$helm_path")"
+
 codeql_languages=""
 if [[ "$enable_codeql" -eq 1 ]]; then
   case "$language" in
     python) codeql_languages='["python"]' ;;
     go) codeql_languages='["go"]' ;;
-    *) codeql_languages="" ;;
+    rust) codeql_languages='["rust"]' ;;
   esac
 fi
-codeql_line=""
-if [[ -n "$codeql_languages" ]]; then
-  codeql_line="$(yaml_line "codeql-languages" "'$codeql_languages'")"
-fi
 
-verify=$(cat <<EOF
+failure_job() {
+  cat <<EOF
+
+  notify-failure:
+    needs: $1
+    if: \${{ always() && github.event_name == 'pull_request' && needs.$1.result == 'failure' }}
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    uses: $hakoniwa/pr-failure-comment.yml@$workflow_ref
+    with:
+      pr-number: \${{ github.event.pull_request.number }}
+      title: "$2"
+EOF
+}
+
+# --- verify.yml -------------------------------------------------------------
+write_file "$workflow_dir/verify.yml" "$(cat <<EOF
 name: Verify
 
 on:
@@ -178,73 +208,60 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
-  actions: read
-  issues: write
-  packages: read
+concurrency:
+  group: verify-\${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: \${{ github.event_name == 'pull_request' }}
+
+permissions: {}
 
 jobs:
   verify:
+    permissions:
+      contents: read
+      packages: read
     uses: $hakoniwa/verify.yml@$workflow_ref
     with:
-      language: $language
-$python_line$binary_line$helm_line
-    secrets: inherit
-
-  notify-failure:
-    needs: verify
-    if: \${{ always() && github.event_name == 'pull_request' && needs.verify.result != 'success' }}
-    permissions:
-      actions: read
-      contents: read
-      issues: write
-    uses: $hakoniwa/pr-failure-comment.yml@$workflow_ref
-    with:
-      pr-number: \${{ github.event.pull_request.number }}
-      title: "Verify failed."
+$verify_inputs
+$(failure_job verify "Verify failed.")
 EOF
-)
-write_workflow "$workflow_dir/verify.yml" "$verify"
+)"
 
+# --- verify-pr.yml ----------------------------------------------------------
 if [[ "$write_pr_check" -eq 1 ]]; then
-  pr_check=$(cat <<EOF
+  write_file "$workflow_dir/verify-pr.yml" "$(cat <<EOF
 name: Verify PR
 
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened, ready_for_review]
 
-permissions:
-  contents: read
-  actions: read
-  issues: write
+concurrency:
+  group: verify-pr-\${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions: {}
 
 jobs:
   verify-pr:
+    permissions:
+      contents: read
     uses: $hakoniwa/verify-pr.yml@$workflow_ref
     with:
       pr-title: \${{ github.event.pull_request.title }}
       pr-body: \${{ github.event.pull_request.body || '' }}
-
-  notify-failure:
-    needs: verify-pr
-    if: \${{ always() && needs.verify-pr.result != 'success' }}
-    permissions:
-      actions: read
-      contents: read
-      issues: write
-    uses: $hakoniwa/pr-failure-comment.yml@$workflow_ref
-    with:
-      pr-number: \${{ github.event.pull_request.number }}
-      title: "PR metadata check failed."
+$(failure_job verify-pr "PR metadata check failed.")
 EOF
-)
-  write_workflow "$workflow_dir/verify-pr.yml" "$pr_check"
+)"
 fi
 
+# --- security.yml -----------------------------------------------------------
 if [[ "$write_security" -eq 1 ]]; then
-  security=$(cat <<EOF
+  security_inputs="      language: $language"
+  if [[ -n "$codeql_languages" ]]; then
+    security_inputs+="$(yaml_line codeql-languages "'$codeql_languages'")"
+  fi
+  security_inputs+="$(yaml_line dependency-min-age-days "$dependency_min_age_days")"
+  write_file "$workflow_dir/security.yml" "$(cat <<EOF
 name: Security
 
 on:
@@ -254,164 +271,198 @@ on:
   schedule:
     - cron: "0 8 * * 1"
 
-permissions:
-  contents: read
-  actions: read
-  issues: write
-  security-events: write
+concurrency:
+  group: security-\${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: \${{ github.event_name == 'pull_request' }}
+
+permissions: {}
 
 jobs:
   scan:
     permissions:
       contents: read
-      security-events: write
       actions: read
+      pull-requests: write
+      security-events: write
     uses: $hakoniwa/code-scanning.yml@$workflow_ref
     with:
-      language: $language
-$codeql_line
-$dependency_age_line
-    secrets: inherit
-
-  notify-failure:
-    needs: scan
-    if: \${{ always() && github.event_name == 'pull_request' && needs.scan.result != 'success' }}
-    permissions:
-      actions: read
-      contents: read
-      issues: write
-    uses: $hakoniwa/pr-failure-comment.yml@$workflow_ref
-    with:
-      pr-number: \${{ github.event.pull_request.number }}
-      title: "Security checks failed."
+$security_inputs
+    secrets:
+      SEMGREP_APP_TOKEN: \${{ secrets.SEMGREP_APP_TOKEN }}
+$(failure_job scan "Security checks failed.")
 EOF
-)
-  write_workflow "$workflow_dir/security.yml" "$security"
+)"
 fi
 
-if [[ "$write_help" -eq 1 ]]; then
-  help_workflow=$(cat <<EOF
-name: PR Help
+# --- build.yml --------------------------------------------------------------
+if [[ "$write_flux" -eq 1 ]]; then
+  flux_release="
+      flux-repo: $flux_repo
+      flux-base: $flux_base
+      flux-file: $flux_file
+      app-id: \${{ vars.APP_ID }}
+    secrets:
+      APP_PRIVATE_KEY: \${{ secrets.PRIVATE_KEY }}"
+else
+  flux_release="
+      flux-repo: \"\""
+fi
+
+write_file "$workflow_dir/build.yml" "$(cat <<EOF
+name: Build
 
 on:
   pull_request:
-    types: [opened, reopened, ready_for_review]
-
-permissions:
-  contents: read
-
-jobs:
-  help:
-    permissions:
-      contents: read
-      issues: write
-      pull-requests: read
-    uses: $hakoniwa/pr-help.yml@$workflow_ref
-    with:
-      pr-number: \${{ github.event.pull_request.number }}
-      preview-command: $preview_command
-      release-command: $release_command
-      required-approvals: "$required_approvals"
-    secrets: inherit
-EOF
-)
-  write_workflow "$workflow_dir/pr-help.yml" "$help_workflow"
-fi
-
-if [[ "$write_preview" -eq 1 ]]; then
-  preview=$(cat <<EOF
-name: PR Candidate
-
-on:
-  issue_comment:
-    types: [created]
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 concurrency:
-  group: \${{ startsWith(github.event.comment.body || '', '$preview_command') && format('candidate-{0}', github.event.issue.number) || format('issue-comment-{0}-{1}', github.event.issue.number, github.run_id) }}
-  cancel-in-progress: true
+  group: build-\${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: \${{ github.event_name == 'pull_request' }}
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   candidate:
-    if: \${{ github.event.issue.pull_request && github.event.comment.user.type != 'Bot' }}
+    if: \${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && !github.event.pull_request.draft }}
     permissions:
-      actions: read
       contents: read
-      issues: write
-      checks: write
+      checks: read
+      packages: write
+      security-events: write
+    uses: $hakoniwa/candidate.yml@$workflow_ref
+    with:
+      ref: \${{ github.event.pull_request.head.sha }}
+      candidate-kind: pr
+      candidate-id: \${{ github.event.pull_request.number }}
+$build_inputs
+      dependency-min-age-days: $dependency_min_age_days
+      image-scan-fail-build: true
+      image-scan-severity-cutoff: critical
+      image-scan-only-fixed: true
+
+  candidate-comment:
+    needs: candidate
+    if: \${{ needs.candidate.result == 'success' }}
+    permissions:
+      contents: read
+      pull-requests: write
+    uses: $hakoniwa/pr-candidate-comment.yml@$workflow_ref
+    with:
+      pr-number: \${{ github.event.pull_request.number }}
+      head-sha: \${{ github.event.pull_request.head.sha }}
+      image: \${{ needs.candidate.outputs.image }}
+      digest: \${{ needs.candidate.outputs.digest }}
+      chart-url: \${{ needs.candidate.outputs.chart_url }}
+      chart-version: \${{ needs.candidate.outputs.chart_version }}$(yaml_line chart-name "$chart_name")
+
+  release:
+    if: \${{ github.event_name != 'pull_request' && !contains(github.event.head_commit.message || '', '[skip release]') }}
+    permissions:
+      contents: write
+      checks: read
       packages: write
       pull-requests: read
+      issues: read
       security-events: write
-    uses: $hakoniwa/pr-candidate-command.yml@$workflow_ref
+    uses: $hakoniwa/release-on-merge.yml@$workflow_ref
+    with:
+$build_inputs$flux_release
+EOF
+)"
+
+# --- commands.yml -----------------------------------------------------------
+upgrade_job=""
+if [[ "$write_flux" -eq 1 ]]; then
+  upgrade_job="$(cat <<EOF
+
+  upgrade:
+    if: \${{ github.event.issue.pull_request && github.event.comment.user.type != 'Bot' && startsWith(github.event.comment.body, '/upgrade') }}
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    uses: $hakoniwa/pr-upgrade-command.yml@$workflow_ref
     with:
       issue-number: \${{ github.event.issue.number }}
-      comment-body: \${{ github.event.comment.body || '' }}
-      comment-author-association: \${{ github.event.comment.author_association || '' }}
-      comment-author-type: \${{ github.event.comment.user.type || '' }}
-      command-prefix: $preview_command
-      allow-forks: false
-      allowed-author-associations: "$allowed_author_associations"
-      language: $language
-$python_line$binary_line$helm_line$chart_line
-$platforms_line
-$cache_line
-$dependency_age_line
-    secrets: inherit
+      comment-body: \${{ github.event.comment.body }}
+      flux-repo: $flux_repo
+      flux-base: $flux_base
+      flux-file: $flux_file
+      app-id: \${{ vars.APP_ID }}
+    secrets:
+      APP_PRIVATE_KEY: \${{ secrets.PRIVATE_KEY }}
 EOF
-)
-  write_workflow "$workflow_dir/pr-candidate.yml" "$preview"
+)"
 fi
 
-if [[ "$write_release" -eq 1 ]]; then
-  release=$(cat <<EOF
-name: PR Release
+write_file "$workflow_dir/commands.yml" "$(cat <<EOF
+name: Commands
 
 on:
   issue_comment:
     types: [created]
 
 concurrency:
-  group: \${{ startsWith(github.event.comment.body || '', '$release_command') && format('release-{0}', github.event.issue.number) || format('issue-comment-{0}-{1}', github.event.issue.number, github.run_id) }}
+  group: commands-\${{ github.event.issue.number }}-\${{ github.event.comment.id }}
   cancel-in-progress: false
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
-  release:
-    if: \${{ github.event.issue.pull_request && github.event.comment.user.type != 'Bot' }}
+  build:
+    if: \${{ github.event.issue.pull_request && github.event.comment.user.type != 'Bot' && startsWith(github.event.comment.body, '/build') }}
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+      actions: write
+      pull-requests: read
       issues: write
-      packages: write
-      checks: write
-      actions: read
-      security-events: write
-    uses: $hakoniwa/release-command.yml@$workflow_ref
+    uses: $hakoniwa/pr-build-command.yml@$workflow_ref
     with:
       issue-number: \${{ github.event.issue.number }}
-      comment-body: \${{ github.event.comment.body || '' }}
-      comment-author-association: \${{ github.event.comment.author_association || '' }}
-      comment-author-type: \${{ github.event.comment.user.type || '' }}
-      command-prefix: $release_command
-      allowed-author-associations: "$allowed_author_associations"
-      language: $language
-$python_line$binary_line$helm_line$chart_line
-$platforms_line
-$cache_line
-      merge-method: $merge_method
-      required-approvals: "$required_approvals"
-    secrets: inherit
+$upgrade_job
 EOF
-)
-  write_workflow "$workflow_dir/pr-release.yml" "$release"
+)"
+
+# --- pre-commit -------------------------------------------------------------
+if [[ "$write_pre_commit" -eq 1 ]]; then
+  write_file "$workflow_dir/pre-commit.yml" "$(cat <<EOF
+name: Pre-commit
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: pre-commit-\${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: \${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+jobs:
+  pre-commit:
+    permissions:
+      contents: read
+    uses: $hakoniwa/pre-commit.yml@$workflow_ref
+    with:
+      language: $language$(yaml_line python-version "$python_version")
+EOF
+)"
+
+  config="$(cat "$templates/base.yaml")"
+  if [[ -f "$templates/$language.yaml" ]]; then
+    config+=$'\n\n'"$(cat "$templates/$language.yaml")"
+  fi
+  write_file "$repo/.pre-commit-config.yaml" "$config"
+  copy_file "$templates/checkov.yaml" "$repo/.checkov.yaml"
 fi
 
+# --- package-cleanup.yml ----------------------------------------------------
 if [[ "$write_package_cleanup" -eq 1 ]]; then
-  package_cleanup=$(cat <<EOF
+  write_file "$workflow_dir/package-cleanup.yml" "$(cat <<EOF
 name: Package Cleanup
 
 on:
@@ -419,12 +470,13 @@ on:
     - cron: "23 6 * * 0"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  packages: write
+permissions: {}
 
 jobs:
   cleanup:
+    permissions:
+      contents: read
+      packages: write
     uses: $hakoniwa/package-cleanup.yml@$workflow_ref
     with:
       package-name: \${{ github.event.repository.name }}
@@ -434,10 +486,9 @@ jobs:
       min-versions-to-keep: 5
       dry-run: false
 EOF
-)
-  write_workflow "$workflow_dir/package-cleanup.yml" "$package_cleanup"
+)"
 fi
 
 echo
 echo "configured Hakoniwa workflows in $workflow_dir"
-echo "next: review generated files, then run actionlint in the target repo"
+echo "next: review the files, run 'pre-commit install', and delete any old per-repo Renovate workflow"
