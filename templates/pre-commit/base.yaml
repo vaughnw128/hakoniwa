@@ -44,4 +44,5 @@ repos:
     hooks:
       - id: checkov
         args: ["--config-file", ".checkov.yaml", "--quiet"]
+        files: (^|/)(Dockerfile[^/]*|[^/]+\.(ya?ml|json|tf))$
         stages: [pre-push]

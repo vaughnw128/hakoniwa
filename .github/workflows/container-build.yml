@@ -88,11 +88,10 @@ jobs:
         shell: bash
         run: |
           while IFS= read -r path; do
+            path="${path#"${path%%[![:space:]]*}"}"
             [ -n "$path" ] || continue
             chmod +x "$path"
-          done <<'EOF'
-          ${INPUTS_EXECUTABLE_PATHS}
-          EOF
+          done <<< "$INPUTS_EXECUTABLE_PATHS"
         env:
           INPUTS_EXECUTABLE_PATHS: ${{ inputs.executable-paths }}
 

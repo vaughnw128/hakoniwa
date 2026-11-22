@@ -31,6 +31,10 @@ Options:
                           Minimum package publish age before candidate builds. Default: 7.
   --workflow-ref REF      Hakoniwa ref to call. Default: main.
   --enable-codeql         Add an advanced CodeQL job. Leave off when CodeQL default setup is on.
+  --semgrep-rules RULES   Semgrep ruleset. Default: p/default.
+  --no-image              No container image: releases only tag and create a GitHub Release.
+  --no-build              No build or release workflows at all (no build.yml, commands.yml,
+                          package-cleanup.yml).
   --flux-repo OWNER/NAME  Flux repo that /upgrade and releases update. Default: vaughnw128/immanent-grove.
   --flux-base BRANCH      Flux repo branch those PRs target. Default: main.
   --flux-file PATH        HelmRelease path in the Flux repo; {chart} is the chart name.
@@ -59,6 +63,9 @@ platforms="linux/amd64,linux/arm64"
 dependency_min_age_days="7"
 workflow_ref="main"
 enable_codeql=0
+semgrep_rules=""
+no_image=0
+write_build=1
 write_flux=1
 flux_repo="vaughnw128/immanent-grove"
 flux_base="main"
@@ -82,6 +89,9 @@ while [[ $# -gt 0 ]]; do
     --dependency-min-age-days) dependency_min_age_days="${2:?missing value for --dependency-min-age-days}"; shift 2 ;;
     --workflow-ref) workflow_ref="${2:?missing value for --workflow-ref}"; shift 2 ;;
     --enable-codeql) enable_codeql=1; shift ;;
+    --semgrep-rules) semgrep_rules="${2:?missing value for --semgrep-rules}"; shift 2 ;;
+    --no-image) no_image=1; shift ;;
+    --no-build) write_build=0; shift ;;
     --flux-repo) flux_repo="${2:?missing value for --flux-repo}"; shift 2 ;;
     --flux-base) flux_base="${2:?missing value for --flux-base}"; shift 2 ;;
     --flux-file) flux_file="${2:?missing value for --flux-file}"; shift 2 ;;
@@ -115,6 +125,11 @@ fi
 if [[ ! "$dependency_min_age_days" =~ ^[0-9]+$ ]]; then
   echo "--dependency-min-age-days must be a non-negative integer" >&2
   exit 2
+fi
+
+if [[ "$write_build" -eq 0 || "$no_image" -eq 1 ]]; then
+  write_flux=0
+  write_package_cleanup=0
 fi
 
 if [[ "$write_flux" -eq 1 && -z "$helm_path" ]]; then
@@ -260,6 +275,7 @@ if [[ "$write_security" -eq 1 ]]; then
   if [[ -n "$codeql_languages" ]]; then
     security_inputs+="$(yaml_line codeql-languages "'$codeql_languages'")"
   fi
+  security_inputs+="$(yaml_line semgrep-rules "$semgrep_rules")"
   security_inputs+="$(yaml_line dependency-min-age-days "$dependency_min_age_days")"
   write_file "$workflow_dir/security.yml" "$(cat <<EOF
 name: Security
@@ -294,6 +310,40 @@ EOF
 )"
 fi
 
+if [[ "$write_build" -eq 1 ]]; then
+if [[ "$no_image" -eq 1 ]]; then
+  write_file "$workflow_dir/build.yml" "$(cat <<EOF
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-\${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  release:
+    if: \${{ !contains(github.event.head_commit.message || '', '[skip release]') }}
+    permissions:
+      contents: write
+      checks: read
+      packages: write
+      pull-requests: read
+      issues: read
+      security-events: write
+    uses: $hakoniwa/release-on-merge.yml@$workflow_ref
+    with:
+$verify_inputs
+      skip-docker: true
+      flux-repo: ""
+EOF
+)"
+else
 # --- build.yml --------------------------------------------------------------
 if [[ "$write_flux" -eq 1 ]]; then
   flux_release="
@@ -373,6 +423,9 @@ $build_inputs$flux_release
 EOF
 )"
 
+fi
+
+if [[ "$no_image" -eq 0 ]]; then
 # --- commands.yml -----------------------------------------------------------
 upgrade_job=""
 if [[ "$write_flux" -eq 1 ]]; then
@@ -423,6 +476,23 @@ jobs:
     with:
       issue-number: \${{ github.event.issue.number }}
 $upgrade_job
+EOF
+)"
+
+fi
+fi
+
+write_file "$repo/.github/zizmor.yml" "$(cat <<'EOF'
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "vaughnw128/hakoniwa/*": ref-pin
+        "*": hash-pin
+  dangerous-triggers:
+    ignore:
+      # Commands check the commenter's write access and never check out PR code.
+      - commands.yml
 EOF
 )"
 
