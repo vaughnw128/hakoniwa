@@ -470,7 +470,7 @@ jobs:
     permissions:
       contents: read
       actions: write
-      pull-requests: read
+      pull-requests: write
       issues: write
     uses: $hakoniwa/pr-build-command.yml@$workflow_ref
     with:
