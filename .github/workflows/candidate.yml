@@ -156,6 +156,29 @@ jobs:
       chart_version: ${{ steps.compute.outputs.chart_version }}
       chart_url: ${{ steps.compute.outputs.chart_url }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - name: Checkout Hakoniwa scripts
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          repository: vaughnw128/hakoniwa
+          ref: main
+          path: .hakoniwa
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Work out the version this candidate would release
+        id: next
+        env:
+          REF: ${{ inputs.ref }}
+        run: bash .hakoniwa/scripts/next-version.sh "$REF"
+
       - id: compute
         shell: bash
         run: |
@@ -183,10 +206,17 @@ jobs:
           [ -z "$chart_registry" ] && chart_registry="oci://ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/charts"
           chart_url="${chart_registry%/}/${chart_name}"
 
+          # Prerelease of the version this commit would release, so it sorts between the
+          # last release and the next one. Without release-worthy commits, assume a patch.
+          base="$NEXT_VERSION"
+          if [ "$NEXT_RELEASE" != "true" ]; then
+            IFS=. read -r major minor patch <<< "$NEXT_VERSION"
+            base="${major}.${minor}.$((patch + 1))"
+          fi
           if [ "$kind" = "pr" ] && [ -n "$id" ]; then
-            chart_version="0.0.0-pr.${id}.${GITHUB_RUN_NUMBER}"
+            chart_version="${base}-pr.${id}.${GITHUB_RUN_NUMBER}"
           else
-            chart_version="0.0.0-${kind}.${GITHUB_RUN_NUMBER}"
+            chart_version="${base}-${kind}.${GITHUB_RUN_NUMBER}"
           fi
 
           {
@@ -208,6 +238,8 @@ jobs:
           INPUTS_IMAGE_REPO: ${{ inputs.image-repo }}
           INPUTS_CHART_NAME: ${{ inputs.chart-name }}
           INPUTS_CHART_REGISTRY: ${{ inputs.chart-registry }}
+          NEXT_VERSION: ${{ steps.next.outputs.version }}
+          NEXT_RELEASE: ${{ steps.next.outputs.release }}
 
   validate:
     name: Validate Inputs
