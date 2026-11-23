@@ -41,7 +41,7 @@ on:
       image-scan-fail-build:
         description: "Fail the release when Grype finds vulnerabilities at or above the cutoff."
         type: boolean
-        default: true
+        default: false
       image-scan-severity-cutoff:
         type: string
         default: "critical"

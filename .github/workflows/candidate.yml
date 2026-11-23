@@ -88,7 +88,7 @@ on:
         type: boolean
         default: false
       image-scan-fail-build:
-        description: "Fail the build when Grype finds image vulnerabilities at or above the severity cutoff. Defaults to advisory for PR candidates."
+        description: "Fail the build when Grype finds image vulnerabilities at or above the severity cutoff. Ignored for PR candidates, which report findings as a PR comment instead."
         type: boolean
         default: false
       image-scan-severity-cutoff:
@@ -394,15 +394,24 @@ jobs:
     needs: [meta, container]
     if: ${{ always() && needs.container.result == 'success' && !inputs.skip-image-scan }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
     steps:
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Run Grype
         id: grype
         uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
         with:
           image: ${{ needs.meta.outputs.image_repo }}@${{ needs.container.outputs.digest }}
-          registry-username: ${{ github.repository_owner }}
-          registry-password: ${{ secrets.GITHUB_TOKEN }}
-          fail-build: ${{ inputs.image-scan-fail-build }}
+          fail-build: ${{ inputs.candidate-kind != 'pr' && inputs.image-scan-fail-build }}
           severity-cutoff: ${{ inputs.image-scan-severity-cutoff }}
           only-fixed: ${{ inputs.image-scan-only-fixed }}
           output-format: sarif
@@ -414,6 +423,55 @@ jobs:
         with:
           sarif_file: ${{ steps.grype.outputs.sarif }}
           category: grype-image
+
+      - name: Summarize critical and high findings
+        if: always() && inputs.candidate-kind == 'pr' && steps.grype.outputs.sarif != ''
+        env:
+          SARIF: ${{ steps.grype.outputs.sarif }}
+          IMAGE: ${{ needs.meta.outputs.image_repo }}@${{ needs.container.outputs.digest }}
+        run: |
+          findings="$(jq -c '
+            [.runs[] | (.tool.driver.rules // []) as $rules | (.results // [])[] | .ruleId as $id
+              | ([$rules[] | select(.id == $id)][0] // {}) as $rule
+              | ($rule.properties["security-severity"] // "0" | tonumber) as $score
+              | select($score >= 7)
+              | {sev: (if $score >= 9 then "critical" else "high" end), score: $score, text: ($rule.shortDescription.text // $id)}]
+            | unique_by(.text) | sort_by(-.score)' "$SARIF")"
+          critical="$(jq '[.[] | select(.sev == "critical")] | length' <<< "$findings")"
+          high="$(jq '[.[] | select(.sev == "high")] | length' <<< "$findings")"
+          total=$((critical + high))
+          {
+            echo "<!-- hakoniwa:grype -->"
+            if [ "$total" -eq 0 ]; then
+              echo "**✅ Grype:** no critical or high vulnerabilities in the candidate image."
+            else
+              echo "**Grype:** ${total} findings in the candidate image (🔴 ${critical} critical, 🟠 ${high} high)"
+              echo ""
+              echo "<details>"
+              echo "<summary>Critical and high findings</summary>"
+              echo ""
+              echo "| Severity | CVSS | Finding |"
+              echo "|---|---|---|"
+              jq -r '.[:25][] | "| \(if .sev == "critical" then "🔴 Critical" else "🟠 High" end) | \(.score) | \(.text) |"' <<< "$findings"
+              echo ""
+              echo "</details>"
+              if [ "$total" -gt 25 ]; then
+                echo ""
+                echo "…and $((total - 25)) more in the Security tab."
+              fi
+            fi
+            echo ""
+            echo "Scanned \`${IMAGE}\`"
+          } > grype-summary.md
+
+      - name: Upload Grype summary
+        if: always() && inputs.candidate-kind == 'pr' && hashFiles('grype-summary.md') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: grype-summary
+          path: grype-summary.md
+          retention-days: 7
+          overwrite: true
 
   chart:
     name: Package Candidate Chart

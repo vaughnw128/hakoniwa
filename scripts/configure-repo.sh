@@ -389,7 +389,6 @@ jobs:
       candidate-id: \${{ github.event.pull_request.number }}
 $build_inputs
       dependency-min-age-days: $dependency_min_age_days
-      image-scan-fail-build: true
       image-scan-severity-cutoff: critical
       image-scan-only-fixed: true
 
