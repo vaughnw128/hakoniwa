@@ -1,0 +1,53 @@
+name: Release Charts
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "charts/**"
+
+permissions: {}
+
+concurrency:
+  group: helm-chart-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release Helm Charts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install Helm
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v5.1.0
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Package and push new chart versions
+        env:
+          REGISTRY: oci://ghcr.io/${{ github.repository_owner }}/charts
+        run: |
+          for chart in charts/*/; do
+            name=$(yq '.name' "$chart/Chart.yaml")
+            version=$(yq '.version' "$chart/Chart.yaml")
+            if helm show chart "$REGISTRY/$name" --version "$version" >/dev/null 2>&1; then
+              echo "$name $version already published"
+              continue
+            fi
+            helm dependency build "$chart"
+            helm package "$chart"
+            helm push "$name-$version.tgz" "$REGISTRY"
+          done

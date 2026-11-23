@@ -17,7 +17,7 @@ spec:
   gatewayClassName: cilium
   infrastructure:
     annotations:
-      external-dns.alpha.kubernetes.io/hostname: {{ .Values.gateway.hostname }}
+      external-dns.kubernetes.io/hostname: {{ .Values.gateway.hostname }}
   listeners:
     - protocol: HTTP
       hostname: {{ .Values.gateway.hostname }}
